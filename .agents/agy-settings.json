@@ -22,17 +22,22 @@
       "read_url(docs.anthropic.com)",
       "read_url(docs.claude.com)",
       "command(docker)",
-      "command(git)",
       "command(gh pr create)",
       "command(gh pr view)",
-      "command(regex:^cd [^;&|$`<>()]+( && (npm|npx|node|make|docker|uv)( [^;&|$`<>()]*)?)*$)"
+      "command(regex:^cd [^;&|$`<>()]+( && (npm|npx|node|make|docker|uv)( [^;&|$`<>()]*)?)*$)",
+      "command(git fetch)",
+      "command(git merge)",
+      "command(git push)",
+      "command(git rev-parse)",
+      "command(git ls-files)",
+      "command(git switch)",
+      "command(regex:^git -C [^;&|$`<>()]+ (status|diff|log|show|add|commit|fetch|merge|push)( [^;&|$`<>()]*)?$)"
     ],
-    "ask": [
-      "command(*)"
-    ],
+    "ask": [],
     "deny": [
+      "command(regex:.*git( .*)? (reset|clean|filter-branch|filter-repo|rebase)( .*)?)",
+      "command(regex:.*git .*push.*agent/(db|api|worker|infra).*)",
       "command(regex:.*git .*push.*(--force|--force-with-lease|--delete| -f| -d| :|main|memory).*)",
-      "command(regex:.*git (reset|clean|filter-branch|filter-repo)( .*)?)",
       "command(regex:.*git branch (-D|-d|--delete).*)",
       "command(gh pr merge)",
       "command(gh repo)",
