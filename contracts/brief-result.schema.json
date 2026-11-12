@@ -33,6 +33,7 @@
         "items": {
           "type": "array",
           "maxItems": 10,
+          "description": "Ordered by importance. Item ranks must equal their 1-based array position (1, 2, 3, ...). JSON Schema cannot express this; the worker validates it before submitting and the API rejects violations with 422 code `invalid_rank`.",
           "items": { "$ref": "#/$defs/Item" }
         }
       },
@@ -45,7 +46,7 @@
       "additionalProperties": false,
       "required": ["rank", "title", "summary", "source_name", "source_url", "published_at"],
       "properties": {
-        "rank": { "type": "integer", "minimum": 1 },
+        "rank": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Equals the item's 1-based position in the section's items array." },
         "title": { "type": "string", "minLength": 1, "maxLength": 200 },
         "summary": {
           "type": "string",

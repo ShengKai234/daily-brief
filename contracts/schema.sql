@@ -30,7 +30,7 @@ create table profiles (
   avatar_url   text check (avatar_url is null or char_length(avatar_url) <= 2048),
   bio          text not null default '' check (char_length(bio) <= 500),
   timezone     text not null default 'Asia/Taipei',
-  locale       text not null default 'zh-TW',
+  locale       text not null default 'zh-TW' check (char_length(locale) between 2 and 35),
   status       text not null default 'pending' check (status in ('pending', 'active', 'disabled')),
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
@@ -108,8 +108,9 @@ create table delivery_slots (
   position   smallint not null check (position between 1 and 3),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id, position),
-  unique (user_id, local_time),
+  -- Deferred so PUT /v1/delivery-slots can swap positions/times while keeping slot ids stable (DECISIONS 2026-11-12).
+  unique (user_id, position) deferrable initially deferred,
+  unique (user_id, local_time) deferrable initially deferred,
   check (extract(minute from local_time) in (0, 30) and extract(second from local_time) = 0)
 );
 
