@@ -25,7 +25,7 @@
       "command(git)",
       "command(gh pr create)",
       "command(gh pr view)",
-      "command(regex:^cd [^;&|$`<>()]+( && (npm|npx|node|make|docker|uv)( [^;&|$`<>()]*)?)?$)"
+      "command(regex:^cd [^;&|$`<>()]+( && (npm|npx|node|make|docker|uv)( [^;&|$`<>()]*)?)*$)"
     ],
     "ask": [
       "command(*)"
