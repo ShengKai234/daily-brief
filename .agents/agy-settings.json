@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "command(npm)",
+      "command(npx)",
+      "command(node)",
+      "command(make)",
+      "command(docker compose)",
+      "command(git status)",
+      "command(git diff)",
+      "command(git log)",
+      "command(git show)",
+      "command(git add)",
+      "command(git commit)",
+      "read_url(registry.npmjs.org)",
+      "read_url(antigravity.google)"
+    ],
+    "ask": [
+      "command(git push -u origin agent/web)",
+      "command(gh pr create)",
+      "command(*)"
+    ],
+    "deny": [
+      "command(regex:git .*push.*(--force|--force-with-lease|--delete| -f| -d|:|main|memory).*)",
+      "command(gh pr merge)",
+      "command(gh repo)",
+      "command(gh api)",
+      "command(gh secret)",
+      "command(gh workflow)",
+      "command(gh auth)",
+      "command(git reset --hard)",
+      "command(git clean)",
+      "command(git worktree remove)",
+      "command(terraform)",
+      "command(aws)",
+      "command(supabase)",
+      "command(sudo)",
+      "command(rm -rf)",
+      "write_file(.env)",
+      "write_file(contracts/)",
+      "write_file(api/)",
+      "write_file(db/)",
+      "write_file(worker/)",
+      "write_file(infra/)"
+    ]
+  }
+}

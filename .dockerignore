@@ -1,0 +1,21 @@
+# Nothing below may end up in a container image (AGENTS.md "Never").
+.git
+.gitignore
+docs/
+.agents/
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
+*.md
+!README.md
+.env
+.env.*
+infra/
+.github/
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.tfstate*

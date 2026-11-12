@@ -1,0 +1,12 @@
+# Project-scoped Codex config. Loaded only when this folder (or worktree) is trusted.
+# Rules live in AGENTS.md. Do not add absolute paths or credentials here.
+#
+# Start Codex with the shared memory directory writable:
+#   codex --add-dir "$BRIEF_MEMORY_DIR"
+
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+# Needed for package installs (uv sync, npm ci). Approved by Kai, see DECISIONS.md.
+network_access = true
