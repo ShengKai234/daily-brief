@@ -516,7 +516,7 @@ paths:
       description: |
         Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,
         sections, items and usage and marks the job `succeeded`.
-        409 `job_not_running` if the job is not `running`; 422 if the body fails the BriefResult schema.
+        409 `job_not_running` if the job is not `running`; 422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section are not exactly 1..n in array order.
       tags: [internal]
       security:
         - internalToken: []
@@ -700,7 +700,7 @@ components:
         avatar_url: { type: [string, "null"], format: uri, maxLength: 2048 }
         bio: { type: string, maxLength: 500 }
         timezone: { type: string, default: Asia/Taipei, description: IANA time zone name., examples: [Asia/Taipei] }
-        locale: { type: string, default: zh-TW, examples: [zh-TW] }
+        locale: { type: string, minLength: 2, maxLength: 35, default: zh-TW, examples: [zh-TW], description: BCP 47 language tag. }
         status: { type: string, enum: [pending, active, disabled] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -713,7 +713,7 @@ components:
         avatar_url: { type: [string, "null"], format: uri, maxLength: 2048 }
         bio: { type: string, maxLength: 500 }
         timezone: { type: string, description: IANA time zone name. }
-        locale: { type: string }
+        locale: { type: string, minLength: 2, maxLength: 35, examples: [zh-TW], description: BCP 47 language tag. }
     Topic:
       type: object
       additionalProperties: false
@@ -934,7 +934,7 @@ components:
         user_id: { type: string, format: uuid }
         report_date: { type: string, format: date }
         timezone: { type: string, examples: [Asia/Taipei] }
-        locale: { type: string, examples: [zh-TW] }
+        locale: { type: string, minLength: 2, maxLength: 35, examples: [zh-TW] }
         topics:
           type: array
           minItems: 1
