@@ -25,6 +25,16 @@ async def owned_topic(db, user_id, topic_id):
     return fields(row, TOPIC_FIELDS)
 
 
+async def owned_ids(db, user_id, topic_ids):
+    # Keep referenced topics alive through report insertion, independently of
+    # current subscriptions. Deletion may clear historical references afterward.
+    rows = await db.all(
+        "SELECT id FROM topics WHERE owner_id=%s AND id=ANY(%s::uuid[]) FOR KEY SHARE",
+        (user_id, topic_ids),
+    )
+    return {row["id"] for row in rows}
+
+
 async def by_title(db, user_id, title):
     row = await db.one(
         "SELECT * FROM topics WHERE owner_id=%s AND normalized_key=%s", (user_id, normalize(title))

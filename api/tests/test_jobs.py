@@ -22,7 +22,10 @@ async def test_report_pipeline_and_persistent_marks(env):
         )
     ).status_code == 204
     response = await env["client"].post(
-        f"/internal/jobs/{job['id']}/result", headers=env["internal"], json=result_for(claimed)
+        f"/internal/jobs/{job['id']}/result",
+        headers=env["internal"],
+        json=result_for(claimed),
+        params={"attempt": claimed["job"]["attempts"]},
     )
     assert response.status_code == 200
     report_id = response.json()["report_id"]
@@ -51,9 +54,12 @@ async def test_report_pipeline_and_persistent_marks(env):
     # Replay cannot create a second report or usage record.
     assert (
         await client.post(
-            f"/internal/jobs/{job['id']}/result", headers=env["internal"], json=result_for(claimed)
+            f"/internal/jobs/{job['id']}/result",
+            headers=env["internal"],
+            json=result_for(claimed),
+            params={"attempt": claimed["job"]["attempts"]},
         )
-    ).json()["code"] == "job_not_running"
+    ).json()["code"] == "lease_lost"
     async with env["database"].transaction() as db:
         assert (await db.one("SELECT status FROM jobs WHERE id=%s", (job["id"],)))[
             "status"
@@ -104,9 +110,9 @@ async def test_invalid_result_is_blocked_without_writes(env, mutation):
     if mutation == "extra":
         item["untrusted"] = True
     if mutation == "date":
-        result["report_date"] = "2000-01-01"
+        result["report_date"] = "not-a-date"
     if mutation == "locale":
-        result["locale"] = "fr"
+        result["locale"] = "x" * 36
     if mutation == "topics":
         section["topic_id"] = str(uuid4())
     if mutation == "duplicate":
@@ -118,13 +124,16 @@ async def test_invalid_result_is_blocked_without_writes(env, mutation):
     if mutation == "rank_noninteger":
         item["rank"] = "1"
     if mutation == "count":
-        section["items"].append({**item, "rank": 2})
+        section["items"] = [{**item, "rank": rank} for rank in range(1, 12)]
     if mutation == "runner":
         result["usage"]["runner"] = "anthropic_api"
     if mutation == "empty_ok":
         section["items"] = []
     response = await env["client"].post(
-        f"/internal/jobs/{job['id']}/result", headers=env["internal"], json=result
+        f"/internal/jobs/{job['id']}/result",
+        headers=env["internal"],
+        json=result,
+        params={"attempt": claimed["job"]["attempts"]},
     )
     assert response.status_code == 422
     if mutation in {"ranks", "rank_zero", "rank_noninteger"}:
@@ -148,7 +157,10 @@ async def test_storage_failure_rolls_back_entire_result(env, monkeypatch):
 
     monkeypatch.setattr(reports, "store", fail_after_writes)
     response = await env["client"].post(
-        f"/internal/jobs/{job['id']}/result", headers=env["internal"], json=result_for(claimed)
+        f"/internal/jobs/{job['id']}/result",
+        headers=env["internal"],
+        json=result_for(claimed),
+        params={"attempt": claimed["job"]["attempts"]},
     )
     assert response.status_code == 422
     async with env["database"].transaction() as db:
@@ -179,20 +191,30 @@ async def test_parallel_claims_never_duplicate(env):
 async def test_retry_limit(env):
     await subscribe(env)
     job = await queued_job(env)
-    await claim(env)
+    first = await claim(env)
     path = f"/internal/jobs/{job['id']}/fail"
     response = await env["client"].post(
-        path, headers=env["internal"], json={"error": "Example failure", "retryable": True}
+        path,
+        headers=env["internal"],
+        json={"error": "Example failure", "retryable": True},
+        params={"attempt": first["job"]["attempts"]},
     )
     assert response.json() == {"status": "queued", "attempts": 1}
-    assert (await claim(env))["job"]["attempts"] == 2
+    second = await claim(env)
+    assert second["job"]["attempts"] == 2
     response = await env["client"].post(
-        path, headers=env["internal"], json={"error": "Example failure", "retryable": True}
+        path,
+        headers=env["internal"],
+        json={"error": "Example failure", "retryable": True},
+        params={"attempt": second["job"]["attempts"]},
     )
     assert response.json() == {"status": "failed", "attempts": 2}
     assert (
         await env["client"].post(
-            path, headers=env["internal"], json={"error": "Example failure", "retryable": False}
+            path,
+            headers=env["internal"],
+            json={"error": "Example failure", "retryable": False},
+            params={"attempt": second["job"]["attempts"]},
         )
     ).status_code == 409
 
@@ -224,6 +246,7 @@ async def test_owner_only_at_claim_and_result(env):
         f"/internal/jobs/{owner_job['id']}/result",
         headers=env["internal"],
         json=result_for(claimed),
+        params={"attempt": claimed["job"]["attempts"]},
     )
     assert response.status_code == 403
     async with env["database"].transaction() as db:
@@ -241,6 +264,9 @@ async def test_insufficient_news_can_have_zero_items(env):
     result["sections"][0].update(status="insufficient_news", note="No fresh sources.", items=[])
     assert (
         await env["client"].post(
-            f"/internal/jobs/{job['id']}/result", headers=env["internal"], json=result
+            f"/internal/jobs/{job['id']}/result",
+            headers=env["internal"],
+            json=result,
+            params={"attempt": claimed["job"]["attempts"]},
         )
     ).status_code == 200

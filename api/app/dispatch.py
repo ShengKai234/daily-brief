@@ -94,4 +94,4 @@ class LocalDispatcher:
                     "output_tokens": None,
                 },
             }
-            await self.queue.complete(claimed["job"]["id"], result)
+            await self.queue.complete(claimed["job"]["id"], result, claimed["job"]["attempts"])

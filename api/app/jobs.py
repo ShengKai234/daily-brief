@@ -3,9 +3,9 @@ from typing import Annotated, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
-from app import profiles, reports, subscriptions
+from app import profiles, reports, subscriptions, topics
 from app.auth import internal_auth
 from app.contract import body, fields
 from app.problems import Problem
@@ -18,8 +18,8 @@ LEASE = timedelta(minutes=35)
 
 class JobQueue(Protocol):
     async def claim(self, worker_id: str): ...
-    async def complete(self, job_id: UUID, result: dict): ...
-    async def fail(self, job_id: UUID, retryable: bool): ...
+    async def complete(self, job_id: UUID, result: dict, attempt: int): ...
+    async def fail(self, job_id: UUID, retryable: bool, attempt: int): ...
 
 
 def owner_allowed(settings, job):
@@ -131,26 +131,30 @@ class PostgresJobQueue:
                 )
                 return {"job": fields(job, JOB_FIELDS), "request": request}
 
-    async def running(self, db, job_id):
+    async def running(self, db, job_id, attempt):
         job = await db.one("SELECT * FROM jobs WHERE id=%s FOR UPDATE", (job_id,))
         if not job:
             raise Problem(404, "not_found")
-        if job["status"] != "running":
-            raise Problem(409, "job_not_running")
+        if job["status"] != "running" or job["attempts"] != attempt:
+            raise Problem(409, "lease_lost")
         return job
 
-    async def complete(self, job_id, result):
+    async def complete(self, job_id, result, attempt):
         forbidden = False
         async with self.database.transaction() as db:
-            job = await self.running(db, job_id)
+            job = await self.running(db, job_id, attempt)
             if not owner_allowed(self.settings, job):
                 await db.update(
                     "jobs", {"status": "failed", "error": "owner_only"}, "id=%s", (job_id,)
                 )
                 forbidden = True
             else:
-                expected = await request_for(db, job)
-                validate_result(self.settings, job, expected, result)
+                user = await profiles.job_profile(db, job["user_id"])
+                if not user or user["status"] != "active":
+                    raise Problem(409, "job_not_eligible")
+                topic_ids = [UUID(section["topic_id"]) for section in result["sections"]]
+                owned_ids = await topics.owned_ids(db, job["user_id"], topic_ids)
+                validate_result(self.settings, job, owned_ids, result)
                 report_id = await reports.store(db, job, result)
                 usage = result["usage"]
                 await db.execute(
@@ -178,9 +182,9 @@ class PostgresJobQueue:
             raise Problem(403, "forbidden")
         return {"report_id": report_id}
 
-    async def fail(self, job_id, retryable):
+    async def fail(self, job_id, retryable, attempt):
         async with self.database.transaction() as db:
-            job = await self.running(db, job_id)
+            job = await self.running(db, job_id, attempt)
             status = "queued" if retryable and job["attempts"] < MAX_ATTEMPTS else "failed"
             if not owner_allowed(self.settings, job):
                 status = "failed"
@@ -194,28 +198,18 @@ class PostgresJobQueue:
         return {"status": status, "attempts": job["attempts"]}
 
 
-def validate_result(settings, job, expected, result):
-    if expected is None:
-        raise Problem(409, "job_not_eligible")
-    topics = {str(topic["topic_id"]): topic for topic in expected["topics"]}
-    ids = [section["topic_id"] for section in result["sections"]]
+def validate_result(settings, job, owned_ids, result):
+    ids = [UUID(section["topic_id"]) for section in result["sections"]]
     usage_runner = result["usage"]["runner"]
     stub = (
         settings.app_env == "local" and settings.agent_runner == "stub" and usage_runner == "stub"
     )
     if usage_runner != job["runner"] and not stub:
         raise Problem(422, "validation_error", "Runner does not match job")
-    if (
-        result["report_date"] != expected["report_date"].isoformat()
-        or result["locale"] != expected["locale"]
-    ):
-        raise Problem(422, "validation_error", "Report date or locale does not match job")
-    if len(ids) != len(set(ids)) or set(ids) != set(topics):
-        raise Problem(422, "validation_error", "Topic set does not match job")
+    if len(ids) != len(set(ids)) or set(ids) != owned_ids:
+        raise Problem(422, "validation_error", "Sections must reference distinct owned topics")
     for section in result["sections"]:
         items = section["items"]
-        if len(items) > topics[section["topic_id"]]["item_count"]:
-            raise Problem(422, "validation_error", "Too many items for topic")
         if [item["rank"] for item in items] != list(range(1, len(items) + 1)):
             raise Problem(422, "invalid_rank", "Ranks must be consecutive from one")
 
@@ -225,6 +219,7 @@ def queue(request: Request) -> JobQueue:
 
 
 Queue = Annotated[JobQueue, Depends(queue)]
+Attempt = Annotated[int, Query(ge=1)]
 
 
 @router.post("/claim", operation_id="claimJob")
@@ -235,11 +230,11 @@ async def claim_job(request: Request, jobs: Queue):
 
 
 @router.post("/{job_id}/result", operation_id="submitJobResult")
-async def submit_result(job_id: UUID, request: Request, jobs: Queue):
-    return await jobs.complete(job_id, await body(request, "submitJobResult"))
+async def submit_result(job_id: UUID, attempt: Attempt, request: Request, jobs: Queue):
+    return await jobs.complete(job_id, await body(request, "submitJobResult"), attempt)
 
 
 @router.post("/{job_id}/fail", operation_id="failJob")
-async def fail_job(job_id: UUID, request: Request, jobs: Queue):
+async def fail_job(job_id: UUID, attempt: Attempt, request: Request, jobs: Queue):
     data = await body(request, "failJob")
-    return await jobs.fail(job_id, data["retryable"])
+    return await jobs.fail(job_id, data["retryable"], attempt)

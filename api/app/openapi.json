@@ -1014,7 +1014,7 @@
       "post": {
         "operationId": "submitJobResult",
         "summary": "Worker submits the generated report",
-        "description": "Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,\nsections, items and usage and marks the job `succeeded`.\n409 `job_not_running` if the job is not `running`; 422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section are not exactly 1..n in array order.\n",
+        "description": "Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,\nsections, items and usage and marks the job `succeeded`.\n409 `job_not_running` if the job is not `running`; 409 `lease_lost` if `attempt` does not match;\n422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section\nare not exactly 1..n in array order. Sections are validated against topics owned by the job's\nuser (not the user's current subscriptions), so settings edited mid-run do not reject output.\n",
         "tags": [
           "internal"
         ],
@@ -1026,6 +1026,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/Attempt"
           }
         ],
         "requestBody": {
@@ -1087,7 +1090,7 @@
       "post": {
         "operationId": "failJob",
         "summary": "Worker reports a failure",
-        "description": "Authenticated with `X-Internal-Token` only. If `retryable` and attempts remain, the job\nreturns to `queued`; otherwise it becomes `failed`.\n",
+        "description": "Authenticated with `X-Internal-Token` only. If `retryable` and attempts remain, the job\nreturns to `queued`; otherwise it becomes `failed`. 409 `lease_lost` if `attempt` does not match.\n",
         "tags": [
           "internal"
         ],
@@ -1099,6 +1102,9 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/Attempt"
           }
         ],
         "requestBody": {
@@ -1211,6 +1217,16 @@
         "schema": {
           "type": "string",
           "format": "uuid"
+        }
+      },
+      "Attempt": {
+        "name": "attempt",
+        "in": "query",
+        "required": true,
+        "description": "Lease fencing. The `job.attempts` value returned by `POST /internal/jobs/claim`. The API accepts\nthe call only while the job is `running` with exactly this attempt number; otherwise 409 `lease_lost`\n(the lease expired and the job was re-queued or re-claimed).\n",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "JobId": {

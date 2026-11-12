@@ -83,17 +83,23 @@ Claims use `FOR UPDATE SKIP LOCKED`; the initial claim increments attempts.
 Retryable failures allow two attempts total. Running leases expire after 35
 minutes; the next scheduler tick requeues or fails them. Scheduler and claim
 reject non-owner `claude_subscription` jobs, and result ingestion checks again.
+Both `/internal/jobs/{id}/result` and `/internal/jobs/{id}/fail` require
+`?attempt=<job.attempts>` from the claim response. The API locks the job and
+accepts writes only while it is running with that attempt; stale, requeued or
+terminal attempts return `409 lease_lost` without changing the job or report.
 
 Report, section, item, usage and success writes share one transaction. The API
-checks result schema, source URL schemes, topic set, counts, ranks, runner,
-date and locale. Free-form worker errors are reduced to a category before DB
-storage. Agent settings remain locked in the POC. Report/item ownership is
-checked by the backend independently of RLS.
+checks result schema, source URL schemes, distinct owned topics, schema item
+limits, ranks, runner, and date/locale formats. Free-form worker errors are
+reduced to a category before DB storage. Agent settings remain locked in the POC.
+Report/item ownership is checked by the backend independently of RLS.
 
-Known contract limits: claim/result/fail have no attempt lease token, so trusted
-workers must not submit after their lease expires. Result checks use the user's
-current subscriptions, timezone and locale; changing those during a run can
-reject the result, which the worker can report as a retryable failure. Persisted
-request snapshots and attempt fencing need coordination with contracts and DB.
+The POC deliberately has no persisted request snapshot. Result topics must still
+belong to the job's user, but do not have to match current subscriptions or item
+counts. Changes to subscriptions, timezone or locale during a run do not reject
+valid output. The trusted worker validates correspondence to its claimed request;
+the API enforces the schema's ten-item cap and stores the submitted report date.
+Deleting a referenced topic before submission makes it invalid; existing topics
+are held through report insertion to avoid a concurrent deletion race.
 Live Supabase, Lambda, GitHub dispatch and browser integration remain M2/M1
 integration checks respectively.
