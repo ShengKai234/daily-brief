@@ -7,8 +7,16 @@ import socket
 import sys
 import time
 
+import httpx
+
 from .client import JobClient
-from .errors import DeadlineError, IdentityMismatchError, OwnerOnlyError, WorkerError
+from .errors import (
+    DeadlineError,
+    IdentityMismatchError,
+    LeaseLostError,
+    OwnerOnlyError,
+    WorkerError,
+)
 from .pipeline import ATTEMPTS, generate_validated
 from .runners.anthropic_api import AnthropicApiRunner
 from .runners.base import AgentRunner
@@ -72,6 +80,16 @@ async def process_one(
     if claimed is None:
         return False
     job, request = claimed["job"], claimed["request"]
+    job_id, attempt = job["id"], job["attempts"]
+
+    async def report_failure(error: str, retryable: bool) -> None:
+        try:
+            await client.fail(job_id, attempt, error, retryable)
+        except LeaseLostError:
+            log.warning("job %s: lease lost while reporting failure; dropping", job_id)
+        except httpx.HTTPError as exc:  # keep the run alive for the remaining jobs
+            log.error("job %s: could not report failure (%s)", job_id, type(exc).__name__)
+
     try:
         check_identity(job, request, override or job["runner"], owner_user_id)
         runner = select_runner(job["runner"], override, owner_user_id, attempt_timeout_s)
@@ -81,13 +99,16 @@ async def process_one(
                 result = await generate_validated(runner, request)
         except TimeoutError:
             raise DeadlineError("worker time budget exhausted") from None
-        await client.submit(job["id"], result)
+        await client.submit(job_id, attempt, result)
+    except LeaseLostError:
+        # Another attempt owns the job now. Post nothing more for it.
+        log.warning("job %s: lease lost; dropping result", job_id)
     except WorkerError as exc:
-        log.error("job %s failed: %s", job["id"], exc)
-        await client.fail(job["id"], str(exc), exc.retryable)
+        log.error("job %s failed: %s", job_id, exc)
+        await report_failure(str(exc), exc.retryable)
     except Exception as exc:  # unexpected: report the type only, never raw content
-        log.exception("job %s crashed", job["id"])
-        await client.fail(job["id"], f"worker error: {type(exc).__name__}", True)
+        log.exception("job %s crashed", job_id)
+        await report_failure(f"worker error: {type(exc).__name__}", True)
     return True
 
 

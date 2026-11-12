@@ -8,19 +8,29 @@ from brief_worker.main import process_one
 from .conftest import OTHER, OWNER
 
 
-def make_client(request_dict, job_runner, user_id, calls, request_user_id=None):
+def make_client(
+    request_dict, job_runner, user_id, calls, request_user_id=None, queries=None, conflict=None
+):
     request_dict["user_id"] = request_user_id or user_id
     job = {
         "id": "44444444-4444-4444-8444-444444444444",
         "user_id": user_id,
         "slot_id": None,
         "scheduled_for": "2026-11-12T07:00:00Z",
-        "attempts": 1,
+        "attempts": 3,
         "runner": job_runner,
     }
 
     def handler(req: httpx.Request):
         calls.append((req.url.path, req.headers.get("x-internal-token"), req.content))
+        if queries is not None:
+            queries.append(dict(req.url.params))
+        if conflict and not req.url.path.endswith("/claim"):
+            return httpx.Response(
+                409,
+                headers={"content-type": "application/problem+json"},
+                json={"code": conflict, "status": 409, "title": "Conflict"},
+            )
         if req.url.path.endswith("/claim"):
             return httpx.Response(200, json={"job": job, "request": request_dict})
         if req.url.path.endswith("/result"):
@@ -146,3 +156,43 @@ def test_job_cap_is_below_api_lease():
     from brief_worker.main import LEASE_CAP_S, worst_case_job_s
 
     assert worst_case_job_s(600) <= LEASE_CAP_S < 35 * 60
+
+
+async def test_attempt_is_sent_on_result(request_dict):
+    calls, queries = [], []
+    client = make_client(request_dict, "claude_subscription", OWNER, calls, queries=queries)
+    await process_one(client, "w", override="stub", owner_user_id=OWNER)
+    assert calls[-1][0].endswith("/result") and queries[-1] == {"attempt": "3"}
+
+
+async def test_attempt_is_sent_on_fail(request_dict):
+    calls, queries = [], []
+    client = make_client(request_dict, "claude_subscription", OTHER, calls, queries=queries)
+    await process_one(client, "w", override=None, owner_user_id=OWNER)
+    assert calls[-1][0].endswith("/fail") and queries[-1] == {"attempt": "3"}
+
+
+async def test_lease_lost_on_result_is_terminal_no_fail_posted(request_dict):
+    calls = []
+    client = make_client(request_dict, "claude_subscription", OWNER, calls, conflict="lease_lost")
+    assert await process_one(client, "w", override="stub", owner_user_id=OWNER)
+    paths = [c[0].rsplit("/", 1)[1] for c in calls]
+    assert paths == ["claim", "result"]  # no /fail after lease_lost
+
+
+async def test_lease_lost_on_fail_is_dropped(request_dict):
+    calls = []
+    client = make_client(request_dict, "claude_subscription", OTHER, calls, conflict="lease_lost")
+    assert await process_one(client, "w", override=None, owner_user_id=OWNER)
+    assert [c[0].rsplit("/", 1)[1] for c in calls] == ["claim", "fail"]
+
+
+async def test_other_conflict_is_not_lease_lost(request_dict):
+    calls = []
+    client = make_client(
+        request_dict, "claude_subscription", OWNER, calls, conflict="job_not_running"
+    )
+    await process_one(client, "w", override="stub", owner_user_id=OWNER)
+    # generic error path: reported as a retryable crash, not silently dropped as lease loss
+    assert [c[0].rsplit("/", 1)[1] for c in calls][:2] == ["claim", "result"]
+    assert calls[-1][0].endswith("/fail")

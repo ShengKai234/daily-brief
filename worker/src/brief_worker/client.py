@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from .errors import LeaseLostError
+
 
 class JobClient:
     """Thin client for /internal/jobs/*. The token is sent only in X-Internal-Token."""
@@ -23,14 +25,29 @@ class JobClient:
         r.raise_for_status()
         return r.json()
 
-    async def submit(self, job_id: str, result: dict[str, Any]) -> str:
-        r = await self._http.post(f"/api/internal/jobs/{job_id}/result", json=result)
+    @staticmethod
+    def _check(r: httpx.Response) -> None:
+        if r.status_code == 409:
+            try:
+                code = r.json().get("code")
+            except ValueError:
+                code = None
+            if code == "lease_lost":
+                raise LeaseLostError("lease lost: attempt no longer owns the job")
         r.raise_for_status()
+
+    async def submit(self, job_id: str, attempt: int, result: dict[str, Any]) -> str:
+        """`attempt` is job.attempts from the claim response (lease fencing)."""
+        r = await self._http.post(
+            f"/api/internal/jobs/{job_id}/result", params={"attempt": attempt}, json=result
+        )
+        self._check(r)
         return r.json()["report_id"]
 
-    async def fail(self, job_id: str, error: str, retryable: bool) -> None:
+    async def fail(self, job_id: str, attempt: int, error: str, retryable: bool) -> None:
         r = await self._http.post(
             f"/api/internal/jobs/{job_id}/fail",
+            params={"attempt": attempt},
             json={"error": error[:2000], "retryable": retryable},
         )
-        r.raise_for_status()
+        self._check(r)

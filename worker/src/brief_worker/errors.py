@@ -34,3 +34,10 @@ class IdentityMismatchError(WorkerError):
 
 class DeadlineError(WorkerError):
     """The worker ran out of its time budget; the job may be re-queued."""
+
+
+class LeaseLostError(WorkerError):
+    """API answered 409 lease_lost: this attempt no longer owns the job. Terminal for the run:
+    nothing more is posted for this job."""
+
+    retryable = False
