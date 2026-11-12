@@ -140,3 +140,9 @@ def test_worst_case_fits_workflow_timeout():
     from brief_worker.main import DEFAULT_ATTEMPT_TIMEOUT_S, DEFAULT_BUDGET_S, worst_case_job_s
 
     assert worst_case_job_s(DEFAULT_ATTEMPT_TIMEOUT_S) < DEFAULT_BUDGET_S < 60 * 60
+
+
+def test_job_cap_is_below_api_lease():
+    from brief_worker.main import LEASE_CAP_S, worst_case_job_s
+
+    assert worst_case_job_s(600) <= LEASE_CAP_S < 35 * 60

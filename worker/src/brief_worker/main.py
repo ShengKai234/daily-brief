@@ -23,6 +23,8 @@ log = logging.getLogger("brief_worker")
 DEFAULT_ATTEMPT_TIMEOUT_S = 600
 DEFAULT_BUDGET_S = 3000
 SAFETY_MARGIN_S = 60
+# The API re-queues a running job after 35 min (api handoff); never post after that.
+LEASE_CAP_S = 30 * 60
 
 
 def worst_case_job_s(attempt_timeout_s: float) -> float:
@@ -74,7 +76,8 @@ async def process_one(
         check_identity(job, request, override or job["runner"], owner_user_id)
         runner = select_runner(job["runner"], override, owner_user_id, attempt_timeout_s)
         try:
-            async with asyncio.timeout(time_left_s):
+            limit = LEASE_CAP_S if time_left_s is None else min(time_left_s, LEASE_CAP_S)
+            async with asyncio.timeout(limit):
                 result = await generate_validated(runner, request)
         except TimeoutError:
             raise DeadlineError("worker time budget exhausted") from None
