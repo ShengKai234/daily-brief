@@ -20,23 +20,26 @@
       "read_url(docs.github.com)",
       "read_url(code.claude.com)",
       "read_url(docs.anthropic.com)",
-      "read_url(docs.claude.com)"
+      "read_url(docs.claude.com)",
+      "command(docker)",
+      "command(git)",
+      "command(gh pr create)",
+      "command(gh pr view)",
+      "command(regex:^cd [^;&|$`<>()]+( && (npm|npx|node|make|docker|uv)( [^;&|$`<>()]*)?)?$)"
     ],
     "ask": [
-      "command(git push -u origin agent/web)",
-      "command(gh pr create)",
       "command(*)"
     ],
     "deny": [
-      "command(regex:git .*push.*(--force|--force-with-lease|--delete| -f| -d|:|main|memory).*)",
+      "command(regex:.*git .*push.*(--force|--force-with-lease|--delete| -f| -d| :|main|memory).*)",
+      "command(regex:.*git (reset|clean|filter-branch|filter-repo)( .*)?)",
+      "command(regex:.*git branch (-D|-d|--delete).*)",
       "command(gh pr merge)",
       "command(gh repo)",
       "command(gh api)",
       "command(gh secret)",
       "command(gh workflow)",
       "command(gh auth)",
-      "command(git reset --hard)",
-      "command(git clean)",
       "command(git worktree remove)",
       "command(terraform)",
       "command(aws)",
