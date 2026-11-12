@@ -17,7 +17,7 @@ Change only the directory you own. Everything else: ask its owner in `HANDOFFS.m
 | infra (F) | Codex | `agent/infra` → `../daily-brief-infra` | `infra/`, `.github/workflows/deploy-*.yml` (starts after M1 only) |
 | review (G) | Claude Code + Codex | read-only | nothing; writes review reports to its memory log |
 
-Each agent maintains its own service's entry in `docker-compose.yml` by proposing the change in `HANDOFFS.md` to lead.
+In `docker-compose.yml` / `docker-compose.override.yml` each agent may edit only its own service block (db agent: `migrate`; api agent: `api`, `scheduler`; web agent: `web`), including removing its `todo-*` profile once the service builds. Anything else there (the `db` service, volumes, `Makefile`) goes to lead via `HANDOFFS.md`.
 
 ## Memory protocol (full rules: DESIGN 10.1)
 

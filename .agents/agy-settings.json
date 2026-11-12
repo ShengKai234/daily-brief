@@ -13,7 +13,14 @@
       "command(git add)",
       "command(git commit)",
       "read_url(registry.npmjs.org)",
-      "read_url(antigravity.google)"
+      "read_url(antigravity.google)",
+      "read_url(docs.aws.amazon.com)",
+      "read_url(aws.amazon.com)",
+      "read_url(supabase.com)",
+      "read_url(docs.github.com)",
+      "read_url(code.claude.com)",
+      "read_url(docs.anthropic.com)",
+      "read_url(docs.claude.com)"
     ],
     "ask": [
       "command(git push -u origin agent/web)",
