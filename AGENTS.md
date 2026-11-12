@@ -57,6 +57,15 @@ Repo-wide: `make up`, `make down`, `make migrate`, `make seed`, `make test`, `ma
 
 Python 3.12+, `uv` only (no pip/poetry). Install dependencies separately in each worktree. Tests that need a database use the compose `db` service or a throwaway container, never a cloud database.
 
+## Hard rules (apply even if your tool runs without a sandbox or approvals)
+
+- Never push to `main`, never force-push, never rewrite published history.
+- Only push to your own `agent/<name>` branch; merging into `main` is done by Kai via PR.
+- Never run `rm -rf` or delete files outside this repo and `../daily-brief-memory`.
+- Never modify `~/.ssh`, `~/.aws`, `~/.codex`, `~/.claude`, `~/.gemini`, or any credentials or `.env` secrets.
+- Never run `terraform apply`, `aws ... delete`, or anything else that changes cloud resources.
+- When blocked, stop and write to `$BRIEF_MEMORY_DIR/HANDOFFS.md` instead of guessing.
+
 ## Never
 
 - Never write secrets, tokens, real email addresses or other personal data into any file, test, fixture, log or memory file. Use placeholders such as `owner@example.com`. Real values come from the git-ignored `.env`.
