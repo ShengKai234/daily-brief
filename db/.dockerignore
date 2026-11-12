@@ -1,0 +1,17 @@
+*
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!alembic/
+!alembic/**
+!brief_db/
+!brief_db/**
+**/__pycache__/
+**/*.pyc
+docs/
+.agents/
+.claude/
+.codex/
+.env
+.env.*
