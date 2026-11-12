@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from brief_db.seed import DEFAULT_TOPICS, LOCAL_OWNER_ID, seed
@@ -143,8 +144,8 @@ async def test_rls_enabled_everywhere_and_client_grants_revoked(connection, owne
         "SELECT relname, relrowsecurity FROM pg_class "
         "WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'"
     )
-    assert len(tables) == 15  # 14 application tables + Alembic bookkeeping.
-    assert all(row["relrowsecurity"] for row in tables)
+    assert tables
+    assert not [row["relname"] for row in tables if not row["relrowsecurity"]]
     for role in ("anon", "authenticated"):
         for row in tables:
             assert not await connection.fetchval(
@@ -158,6 +159,35 @@ async def test_rls_enabled_everywhere_and_client_grants_revoked(connection, owne
                 await connection.fetch("SELECT * FROM profiles")
         finally:
             await connection.execute("RESET ROLE")
+
+
+@pytest.mark.parametrize("scope", ["", " IN SCHEMA public"])
+async def test_future_tables_do_not_inherit_client_grants(connection, scope):
+    # Reproduce an already-migrated database with global or schema defaults.
+    await asyncio.to_thread(command.downgrade, alembic_config(), "0002_security_slots")
+    await connection.execute(
+        f"ALTER DEFAULT PRIVILEGES{scope} GRANT ALL ON TABLES TO PUBLIC, anon, authenticated"
+    )
+    await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    await connection.execute("CREATE TABLE future_table (id integer PRIMARY KEY)")
+    await connection.execute("INSERT INTO future_table VALUES (1)")
+    # No RLS on this probe: denial must come from privileges alone, including
+    # TRUNCATE, which RLS cannot block. rls_probe receives only PUBLIC grants.
+    for role in ("anon", "authenticated", "rls_probe"):
+        assert not await connection.fetchval(
+            "SELECT has_table_privilege($1, 'future_table', "
+            "'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')",
+            role,
+        )
+        await connection.execute(f"SET ROLE {role}")
+        try:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.fetch("SELECT * FROM future_table")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute("TRUNCATE future_table")
+        finally:
+            await connection.execute("RESET ROLE")
+    assert await connection.fetchval("SELECT count(*) FROM future_table") == 1
 
 
 async def test_restrictive_rls_blocks_reads_and_writes_even_with_grants(connection, owner):
@@ -184,6 +214,47 @@ async def test_updated_at_trigger(connection, owner):
     previous = await connection.fetchval("SELECT updated_at FROM profiles")
     await connection.execute("UPDATE profiles SET bio = 'updated' WHERE user_id = $1", owner)
     assert await connection.fetchval("SELECT updated_at FROM profiles") > previous
+
+
+@pytest.mark.parametrize(
+    "locale,valid",
+    [("", False), ("x", False), ("en", True), ("x" * 35, True), ("x" * 36, False), ("中文", True)],
+)
+async def test_profile_locale_length_on_insert_and_update(connection, owner, locale, valid):
+    statements = (
+        (
+            "INSERT INTO profiles (user_id, email, locale) VALUES ($1, 'reader@example.com', $2)",
+            uuid4(),
+        ),
+        ("UPDATE profiles SET locale = $2 WHERE user_id = $1", owner),
+    )
+    for sql, user_id in statements:
+        if valid:
+            await connection.execute(sql, user_id, locale)
+            assert (
+                await connection.fetchval("SELECT locale FROM profiles WHERE user_id = $1", user_id)
+                == locale
+            )
+        else:
+            with pytest.raises(asyncpg.CheckViolationError) as error:
+                await connection.execute(sql, user_id, locale)
+            assert error.value.constraint_name == "profiles_locale_check"
+
+
+async def test_locale_migration_validates_existing_rows_and_downgrades(connection, owner):
+    await asyncio.to_thread(command.downgrade, alembic_config(), "0003_default_privileges")
+    await connection.execute("UPDATE profiles SET locale = 'x' WHERE user_id = $1", owner)
+    with pytest.raises(IntegrityError):
+        await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    assert (
+        await connection.fetchval("SELECT version_num FROM alembic_version")
+        == "0003_default_privileges"
+    )
+    assert await connection.fetchval("SELECT locale FROM profiles") == "x"
+    await connection.execute("UPDATE profiles SET locale = 'zh-TW' WHERE user_id = $1", owner)
+    await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    with pytest.raises(asyncpg.CheckViolationError):
+        await connection.execute("UPDATE profiles SET locale = 'x' WHERE user_id = $1", owner)
 
 
 async def test_seed_local_is_repeatable_and_preserves_settings(connection, monkeypatch):
@@ -254,7 +325,7 @@ async def test_upgrade_downgrade_upgrade(database, connection):
     fresh = await asyncpg.connect(database)
     try:
         assert (
-            await fresh.fetchval("SELECT version_num FROM alembic_version") == "0002_security_slots"
+            await fresh.fetchval("SELECT version_num FROM alembic_version") == "0004_profile_locale"
         )
         assert await fresh.fetchval("SELECT count(*) FROM profiles") == 0
     finally:
