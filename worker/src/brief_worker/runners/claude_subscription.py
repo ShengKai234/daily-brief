@@ -1,0 +1,124 @@
+"""Runs Claude Code headless on the owner's plan (DESIGN 3.1, 7).
+
+Hard rule: only the configured owner's jobs. The check is inside `run`, so no caller can skip it.
+Do not run this against the real plan in tests; use StubRunner.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import tempfile
+import time
+
+from ..errors import OutputInvalidError, OwnerOnlyError
+from ..prompt import SYSTEM_PROMPT, build_user_prompt
+from ..validation import load_schema
+from .base import BriefRequest, BriefResult
+
+ALLOWED_TOOLS = ("WebSearch", "WebFetch")
+# Only these variables reach the claude process; INTERNAL_SERVICE_TOKEN and others stay out.
+PASS_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+class ClaudeSubscriptionRunner:
+    def __init__(
+        self,
+        owner_user_id: str | None,
+        *,
+        model: str = "sonnet",
+        timeout_s: float = 900,
+        claude_bin: str = "claude",
+    ) -> None:
+        self.owner_user_id = owner_user_id
+        self.model = model
+        self.timeout_s = timeout_s
+        self.claude_bin = claude_bin
+
+    def check_owner(self, request: BriefRequest) -> None:
+        # Fail closed: no configured owner means nobody is allowed.
+        if not self.owner_user_id or request.get("user_id") != self.owner_user_id:
+            raise OwnerOnlyError("claude_subscription runner is restricted to the owner")
+
+    def build_command(self) -> list[str]:
+        tools = ",".join(ALLOWED_TOOLS)
+        return [
+            self.claude_bin,
+            "-p",
+            "--model",
+            self.model,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(load_schema()),
+            "--tools",
+            tools,
+            "--allowedTools",
+            *ALLOWED_TOOLS,
+            "--permission-mode",
+            "dontAsk",
+            "--permission-prompts",
+            "none",
+            "--strict-mcp-config",
+            "--system-prompt",
+            SYSTEM_PROMPT,
+        ]
+
+    def build_env(self) -> dict[str, str]:
+        return {k: os.environ[k] for k in PASS_ENV if k in os.environ}
+
+    async def run(self, request: BriefRequest) -> BriefResult:
+        self.check_owner(request)
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory(prefix="brief-run-") as cwd:  # empty dir: nothing to read
+            proc = await asyncio.create_subprocess_exec(
+                *self.build_command(),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=self.build_env(),
+            )
+            try:
+                out, _ = await asyncio.wait_for(
+                    proc.communicate(build_user_prompt(request).encode()), self.timeout_s
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise OutputInvalidError("claude run timed out") from None
+        if proc.returncode != 0:
+            raise OutputInvalidError(f"claude exited with code {proc.returncode}")
+        return self.parse_output(
+            out.decode(errors="replace"), int((time.monotonic() - started) * 1000)
+        )
+
+    def parse_output(self, raw: str, duration_ms: int) -> BriefResult:
+        """Parse `claude -p --output-format json`. Field names are unverified (VERIFIED 5)."""
+        try:
+            envelope = json.loads(raw)
+        except json.JSONDecodeError:
+            raise OutputInvalidError("claude output is not JSON") from None
+        if not isinstance(envelope, dict) or envelope.get("is_error"):
+            raise OutputInvalidError("claude reported an error")
+        result = envelope.get("structured_output")
+        if result is None:
+            text = envelope.get("result")
+            try:
+                result = json.loads(text) if isinstance(text, str) else None
+            except json.JSONDecodeError:
+                result = None
+        if not isinstance(result, dict):
+            raise OutputInvalidError("no JSON object in claude output")
+        usage = envelope.get("usage") or {}
+        searches = (usage.get("server_tool_use") or {}).get("web_search_requests", 0)
+        result["usage"] = {
+            "runner": "claude_subscription",
+            "model": self.model,
+            "duration_ms": duration_ms,
+            "search_count": searches if isinstance(searches, int) else 0,
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+        }
+        return result

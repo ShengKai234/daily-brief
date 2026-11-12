@@ -1,0 +1,45 @@
+# Agent worker: claims queued jobs from the internal API and runs them (DESIGN 4.2, 7, 8).
+# Triggered only by the API through workflow_dispatch. No cron, no pull_request(_target), so
+# fork pull requests never get secrets.
+name: agent-worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-worker
+  cancel-in-progress: false
+
+jobs:
+  work:
+    # Run only from main in the upstream repo: secrets are never exposed to other refs or forks.
+    if: github.repository == 'ShengKai234/daily-brief' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            worker
+            contracts
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install worker
+        working-directory: worker
+        run: uv sync --frozen --no-dev
+      - name: Process queued jobs
+        working-directory: worker
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+          OWNER_USER_ID: ${{ vars.OWNER_USER_ID }}
+          INTERNAL_SERVICE_TOKEN: ${{ secrets.INTERNAL_SERVICE_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: uv run brief-worker
