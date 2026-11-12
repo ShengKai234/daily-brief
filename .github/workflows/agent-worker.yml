@@ -1,5 +1,5 @@
 # Agent worker: claims queued jobs from the internal API and runs them (DESIGN 4.2, 7, 8).
-# Triggered only by the API through workflow_dispatch. No cron, no pull_request(_target), so
+# Triggered only by the API through workflow_dispatch. No cron and no PR triggers, so
 # fork pull requests never get secrets.
 name: agent-worker
 
