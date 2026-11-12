@@ -5,7 +5,10 @@ portable SQL and no dependency on Supabase Auth tables. Alembic revision
 `0002_security_slots` adds explicit direct-client denial and deferred slot
 uniqueness; `0003_default_privileges` protects future tables from inherited
 client grants. The historical migration is self-contained; changing a contract
-does not silently change an existing revision.
+does not silently change an existing revision. Revision `0004_profile_locale`
+aligns `profiles.locale` with contract `c35e8de`: 2–35 characters on insert and
+update. Existing invalid values make the upgrade fail without changing data;
+correct those values before retrying. Downgrade removes only this length check.
 
 From the repository root, with the worktree's git-ignored `.env` configured:
 
