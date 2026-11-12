@@ -143,8 +143,8 @@ async def test_rls_enabled_everywhere_and_client_grants_revoked(connection, owne
         "SELECT relname, relrowsecurity FROM pg_class "
         "WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'"
     )
-    assert len(tables) == 15  # 14 application tables + Alembic bookkeeping.
-    assert all(row["relrowsecurity"] for row in tables)
+    assert tables
+    assert not [row["relname"] for row in tables if not row["relrowsecurity"]]
     for role in ("anon", "authenticated"):
         for row in tables:
             assert not await connection.fetchval(
@@ -158,6 +158,35 @@ async def test_rls_enabled_everywhere_and_client_grants_revoked(connection, owne
                 await connection.fetch("SELECT * FROM profiles")
         finally:
             await connection.execute("RESET ROLE")
+
+
+@pytest.mark.parametrize("scope", ["", " IN SCHEMA public"])
+async def test_future_tables_do_not_inherit_client_grants(connection, scope):
+    # Reproduce an already-migrated database with global or schema defaults.
+    await asyncio.to_thread(command.downgrade, alembic_config(), "0002_security_slots")
+    await connection.execute(
+        f"ALTER DEFAULT PRIVILEGES{scope} GRANT ALL ON TABLES TO PUBLIC, anon, authenticated"
+    )
+    await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    await connection.execute("CREATE TABLE future_table (id integer PRIMARY KEY)")
+    await connection.execute("INSERT INTO future_table VALUES (1)")
+    # No RLS on this probe: denial must come from privileges alone, including
+    # TRUNCATE, which RLS cannot block. rls_probe receives only PUBLIC grants.
+    for role in ("anon", "authenticated", "rls_probe"):
+        assert not await connection.fetchval(
+            "SELECT has_table_privilege($1, 'future_table', "
+            "'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')",
+            role,
+        )
+        await connection.execute(f"SET ROLE {role}")
+        try:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.fetch("SELECT * FROM future_table")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute("TRUNCATE future_table")
+        finally:
+            await connection.execute("RESET ROLE")
+    assert await connection.fetchval("SELECT count(*) FROM future_table") == 1
 
 
 async def test_restrictive_rls_blocks_reads_and_writes_even_with_grants(connection, owner):
@@ -254,7 +283,8 @@ async def test_upgrade_downgrade_upgrade(database, connection):
     fresh = await asyncpg.connect(database)
     try:
         assert (
-            await fresh.fetchval("SELECT version_num FROM alembic_version") == "0002_security_slots"
+            await fresh.fetchval("SELECT version_num FROM alembic_version")
+            == "0003_default_privileges"
         )
         assert await fresh.fetchval("SELECT count(*) FROM profiles") == 0
     finally:

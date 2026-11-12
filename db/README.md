@@ -3,7 +3,8 @@
 Postgres 16 migrations derived from `contracts/schema.sql` at `6ada9a6`, with
 portable SQL and no dependency on Supabase Auth tables. Alembic revision
 `0002_security_slots` adds explicit direct-client denial and deferred slot
-uniqueness. The historical migration is self-contained; changing a contract
+uniqueness; `0003_default_privileges` protects future tables from inherited
+client grants. The historical migration is self-contained; changing a contract
 does not silently change an existing revision.
 
 From the repository root, with the worktree's git-ignored `.env` configured:
@@ -86,10 +87,23 @@ not control). The API connects through a trusted table-owner or BYPASSRLS role
 and must authorize every request. A Supabase service-role HTTP key is not a SQL
 login. No JWT setting or Supabase-specific function is used in policies.
 
+Revision `0003_default_privileges` also revokes default table grants from PUBLIC
+and, when present, `anon` and `authenticated`. It removes both database-wide and
+`public` schema defaults for the role running the migration: schema revokes alone
+cannot override global grants. Defaults apply only to objects created by that
+role, so future migrations must use the same role. Another table-creating role
+needs equivalent defaults configured separately. Defaults for unrelated roles
+are unchanged. See [Postgres default privileges](https://www.postgresql.org/docs/16/sql-alterdefaultprivileges.html).
+
+Every new application table still needs RLS enabled, a restrictive deny policy,
+and explicit client privilege revocation in its migration. Default privilege
+revocation is an extra safeguard; it does not enable RLS or prevent a later
+explicit grant from reopening access.
+
 Downgrade removes application tables and the timestamp function; it preserves
 the potentially pre-existing `pgcrypto` extension. Security downgrade does not
-restore revoked client privileges. Use downgrade only on disposable/local data
-unless a separate production migration plan has been reviewed.
+restore revoked client privileges or default grants. Use downgrade only on
+disposable/local data unless a separate production migration plan has been reviewed.
 
 ## Verification
 
@@ -105,7 +119,8 @@ port, create a fresh database per test, and remove those databases/container on
 exit. They ignore the ambient `DATABASE_URL` and never contact a cloud database.
 Docker must be running. Test coverage includes the three-slot limit, time
 granularity, deferred swaps, concurrent job deduplication, slot deletion history,
-client grants/RLS, timestamp updates, seed behavior and downgrade/upgrade.
+client grants/RLS (including future-table default grants), timestamp updates,
+seed behavior and downgrade/upgrade.
 
 The image copies only dependency metadata, migrations and the command package.
 The per-service `.dockerignore` excludes other files by default, including docs,
