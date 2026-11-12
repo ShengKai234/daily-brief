@@ -28,7 +28,7 @@ class ClaudeSubscriptionRunner:
         owner_user_id: str | None,
         *,
         model: str = "sonnet",
-        timeout_s: float = 900,
+        timeout_s: float = 600,
         claude_bin: str = "claude",
     ) -> None:
         self.owner_user_id = owner_user_id

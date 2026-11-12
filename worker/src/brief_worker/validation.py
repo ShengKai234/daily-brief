@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from datetime import date, datetime
 from functools import lru_cache
@@ -33,6 +34,24 @@ def _is_http_url(value: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc) and " " not in value
 
 
+def _path(parts) -> str:
+    return "/".join(str(p) for p in parts) or "<root>"
+
+
+_RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
+
+
+def _is_rfc3339(value: str) -> bool:
+    """Date-time with a required offset (rejects date-only and offset-less timestamps)."""
+    if not _RFC3339.match(value):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _is_uuid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -46,9 +65,13 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise OutputInvalidError("result is not a JSON object")
     validator = Draft202012Validator(load_schema())
+    # Field path and rule name only: rejected values are report content and must not be logged
+    # or sent in the fail payload (the repo and its Actions logs are public).
     errors = [
-        f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message[:200]}"
-        for e in sorted(validator.iter_errors(result), key=lambda e: list(e.absolute_path))
+        f"{_path(e.absolute_path)}: {e.validator}"
+        for e in sorted(
+            validator.iter_errors(result), key=lambda e: [str(p) for p in e.absolute_path]
+        )
     ]
     if errors:
         raise OutputInvalidError("schema: " + "; ".join(errors[:10]))
@@ -68,7 +91,7 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
     for section in result["sections"]:
         tid = section["topic_id"]
         if not _is_uuid(tid) or tid not in wanted:
-            problems.append(f"unknown topic_id {tid}")
+            problems.append("section with a topic_id that is not in the request")
             continue
         if tid in seen:
             problems.append(f"duplicate section for topic {tid}")
@@ -76,17 +99,15 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
         items = section["items"]
         if len(items) > wanted[tid]:
             problems.append(f"topic {tid}: {len(items)} items, limit {wanted[tid]}")
-        if [i["rank"] for i in items] != list(range(1, len(items) + 1)):
-            problems.append(f"topic {tid}: ranks must run 1..n in order")
+        for position, item in enumerate(items, start=1):
+            if item["rank"] != position:
+                problems.append(f"topic {tid}: rank must equal 1-based position (item {position})")
         for item in items:
             if not _is_http_url(item["source_url"]):
                 problems.append(f"topic {tid}: source_url is not an http(s) URL")
             published = item["published_at"]
-            if published is not None:
-                try:
-                    datetime.fromisoformat(published.replace("Z", "+00:00"))
-                except ValueError:
-                    problems.append(f"topic {tid}: published_at is not a date-time")
+            if published is not None and not _is_rfc3339(published):
+                problems.append(f"topic {tid}: published_at is not an RFC 3339 date-time")
     missing = set(wanted) - seen
     if missing:
         problems.append(f"missing sections for {len(missing)} topic(s)")

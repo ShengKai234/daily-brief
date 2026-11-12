@@ -18,7 +18,8 @@ jobs:
     # Run only from main in the upstream repo: secrets are never exposed to other refs or forks.
     if: github.repository == 'ShengKai234/daily-brief' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Worker stops claiming and ends by WORKER_BUDGET_S (50 min); the rest is room to report /fail.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,4 +43,6 @@ jobs:
           OWNER_USER_ID: ${{ vars.OWNER_USER_ID }}
           INTERNAL_SERVICE_TOKEN: ${{ secrets.INTERNAL_SERVICE_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          WORKER_ATTEMPT_TIMEOUT_S: "600"
+          WORKER_BUDGET_S: "3000"
         run: uv run brief-worker

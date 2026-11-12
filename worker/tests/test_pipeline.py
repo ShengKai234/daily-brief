@@ -1,6 +1,6 @@
 import pytest
 
-from brief_worker.errors import OutputInvalidError
+from brief_worker.errors import OutputExhaustedError
 from brief_worker.pipeline import generate_validated
 from brief_worker.runners.stub import StubRunner
 
@@ -25,6 +25,7 @@ async def test_retry_once_then_succeed(request_dict):
 
 async def test_fails_after_one_retry(request_dict):
     runner = Flaky(5)
-    with pytest.raises(OutputInvalidError):
+    with pytest.raises(OutputExhaustedError) as exc:
         await generate_validated(runner, request_dict)
+    assert exc.value.retryable is False
     assert runner.calls == 2

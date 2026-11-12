@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from .errors import OutputInvalidError, WorkerError
+from .errors import OutputExhaustedError, OutputInvalidError, WorkerError
 from .runners.base import AgentRunner, BriefRequest, BriefResult
 from .validation import validate_result
 
@@ -22,4 +22,4 @@ async def generate_validated(runner: AgentRunner, request: BriefRequest) -> Brie
             log.warning("invalid output on attempt %d: %s", attempt, exc)
         except WorkerError:
             raise
-    raise OutputInvalidError(f"invalid output after {ATTEMPTS} attempts: {last}")
+    raise OutputExhaustedError(f"invalid output after {ATTEMPTS} attempts: {last}")

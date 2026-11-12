@@ -22,7 +22,7 @@ class StubRunner:
                 items = [
                     {
                         "rank": n,
-                        "title": f"{topic['title']} item {n}",
+                        "title": f"{topic['title'][:180]} item {n}",
                         "summary": "Fixed stub summary.",
                         "source_name": "Example News",
                         "source_url": f"https://example.com/{n}",
