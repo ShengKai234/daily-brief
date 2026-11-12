@@ -516,12 +516,16 @@ paths:
       description: |
         Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,
         sections, items and usage and marks the job `succeeded`.
-        409 `job_not_running` if the job is not `running`; 422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section are not exactly 1..n in array order.
+        409 `job_not_running` if the job is not `running`; 409 `lease_lost` if `attempt` does not match;
+        422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section
+        are not exactly 1..n in array order. Sections are validated against topics owned by the job's
+        user (not the user's current subscriptions), so settings edited mid-run do not reject output.
       tags: [internal]
       security:
         - internalToken: []
       parameters:
         - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/Attempt"
       requestBody:
         required: true
         content:
@@ -552,12 +556,13 @@ paths:
       summary: Worker reports a failure
       description: |
         Authenticated with `X-Internal-Token` only. If `retryable` and attempts remain, the job
-        returns to `queued`; otherwise it becomes `failed`.
+        returns to `queued`; otherwise it becomes `failed`. 409 `lease_lost` if `attempt` does not match.
       tags: [internal]
       security:
         - internalToken: []
       parameters:
         - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/Attempt"
       requestBody:
         required: true
         content:
@@ -611,6 +616,15 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    Attempt:
+      name: attempt
+      in: query
+      required: true
+      description: |
+        Lease fencing. The `job.attempts` value returned by `POST /internal/jobs/claim`. The API accepts
+        the call only while the job is `running` with exactly this attempt number; otherwise 409 `lease_lost`
+        (the lease expired and the job was re-queued or re-claimed).
+      schema: { type: integer, minimum: 1 }
     JobId:
       name: job_id
       in: path
