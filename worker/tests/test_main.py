@@ -189,9 +189,7 @@ async def test_lease_lost_on_fail_is_dropped(request_dict):
 
 async def test_other_conflict_is_not_lease_lost(request_dict):
     calls = []
-    client = make_client(
-        request_dict, "claude_subscription", OWNER, calls, conflict="job_not_running"
-    )
+    client = make_client(request_dict, "claude_subscription", OWNER, calls, conflict="topic_exists")
     await process_one(client, "w", override="stub", owner_user_id=OWNER)
     # generic error path: reported as a retryable crash, not silently dropped as lease loss
     assert [c[0].rsplit("/", 1)[1] for c in calls][:2] == ["claim", "result"]

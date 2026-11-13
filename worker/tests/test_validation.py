@@ -27,6 +27,13 @@ async def test_insufficient_news_may_be_empty(request_dict):
         lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "javascript:alert(1)"),
         lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "ftp://example.com/x"),
         lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https://"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https:///path"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "http://?q=1"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https://#frag"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https://@example.com"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https://u@example.com/"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "https:// example.com"),
+        lambda r: r["sections"][0]["items"][0].__setitem__("source_url", "HTTPS://example.com"),
         lambda r: r["sections"][0]["items"][0].__setitem__("summary", "x" * 601),
         lambda r: r["sections"][0]["items"][0].__setitem__("title", ""),
         lambda r: r["sections"][0].__setitem__("title", "t" * 201),
@@ -89,4 +96,19 @@ async def test_error_message_has_no_report_content(request_dict):
 async def test_stub_titles_stay_within_limit(request_dict):
     request_dict["topics"][0]["title"] = "T" * 200
     res = await valid(request_dict)
+    validate_result(res, request_dict)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com",
+        "http://example.com/a?b=1#c",
+        "https://example.com:8080/x",
+        "https://a.b/?q",
+    ],
+)
+async def test_urls_with_host_are_accepted(request_dict, url):
+    res = await valid(request_dict)
+    res["sections"][0]["items"][0]["source_url"] = url
     validate_result(res, request_dict)
