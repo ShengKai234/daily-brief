@@ -36,6 +36,24 @@ async def add_job(connection, owner, slot, scheduled_for):
     )
 
 
+async def add_report_item(connection, owner):
+    report = await connection.fetchval(
+        "INSERT INTO reports (user_id, report_date) VALUES ($1, '2026-11-13') RETURNING id", owner
+    )
+    section = await connection.fetchval(
+        "INSERT INTO report_sections (report_id, title, position) "
+        "VALUES ($1, 'News', 0) RETURNING id",
+        report,
+    )
+    item = await connection.fetchval(
+        """INSERT INTO report_items
+        (section_id, rank, title, summary, source_name, source_url)
+        VALUES ($1, 1, 'Title', 'Summary', 'Example', 'https://example.com') RETURNING id""",
+        section,
+    )
+    return section, item
+
+
 async def test_three_slots_and_fourth_rejected(connection, owner):
     for position in range(1, 4):
         await add_slot(connection, owner, position, time(6 + position))
@@ -257,6 +275,95 @@ async def test_locale_migration_validates_existing_rows_and_downgrades(connectio
         await connection.execute("UPDATE profiles SET locale = 'x' WHERE user_id = $1", owner)
 
 
+@pytest.mark.parametrize(
+    "url,valid",
+    [
+        ("http://example.com", True),
+        ("https://news.example.com/item?q=1#section", True),
+        ("https://example.com?query=1", True),
+        ("https://example.com#section", True),
+        ("https://example.com:8443/path", True),
+        ("https://[::1]/path", True),
+        ("https://example.com/" + "x" * (2048 - len("https://example.com/")), True),
+        ("https://example.com/" + "x" * (2049 - len("https://example.com/")), False),
+        ("https://", False),
+        ("http://", False),
+        ("https:///path", False),
+        ("https://?query=1", False),
+        ("https://#section", False),
+        ("https://@/path", False),
+        ("https://exa mple.com/path", False),
+        ("https://example.com/path with spaces", False),
+        ("https://example.com/\npath", False),
+        ("ftp://example.com/path", False),
+    ],
+    ids=[
+        "http",
+        "path-query-fragment",
+        "query",
+        "fragment",
+        "port",
+        "ipv6",
+        "max-length",
+        "too-long",
+        "empty-https",
+        "empty-http",
+        "empty-path",
+        "empty-query",
+        "empty-fragment",
+        "empty-userinfo",
+        "space-host",
+        "space-path",
+        "newline-path",
+        "wrong-scheme",
+    ],
+)
+async def test_source_url_host_on_insert_and_update(connection, owner, url, valid):
+    section, item = await add_report_item(connection, owner)
+    statements = (
+        (
+            """INSERT INTO report_items
+        (section_id, rank, title, summary, source_name, source_url)
+        VALUES ($1, 2, 'Title', 'Summary', 'Example', $2)""",
+            section,
+        ),
+        ("UPDATE report_items SET source_url = $2 WHERE id = $1", item),
+    )
+    for sql, identifier in statements:
+        if valid:
+            await connection.execute(sql, identifier, url)
+        else:
+            with pytest.raises(asyncpg.CheckViolationError) as error:
+                await connection.execute(sql, identifier, url)
+            assert error.value.constraint_name == "report_items_source_url_check"
+    assert await connection.fetchval("SELECT source_url FROM report_items WHERE id = $1", item) == (
+        url if valid else "https://example.com"
+    )
+
+
+async def test_source_url_migration_validates_existing_rows_and_downgrades(connection, owner):
+    _, item = await add_report_item(connection, owner)
+    await asyncio.to_thread(command.downgrade, alembic_config(), "0004_profile_locale")
+    await connection.execute(
+        "UPDATE report_items SET source_url = 'https:///missing' WHERE id = $1", item
+    )
+    with pytest.raises(IntegrityError):
+        await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    assert (
+        await connection.fetchval("SELECT version_num FROM alembic_version")
+        == "0004_profile_locale"
+    )
+    assert await connection.fetchval("SELECT source_url FROM report_items") == "https:///missing"
+    await connection.execute(
+        "UPDATE report_items SET source_url = 'https://example.com' WHERE id = $1", item
+    )
+    await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    with pytest.raises(asyncpg.CheckViolationError):
+        await connection.execute(
+            "UPDATE report_items SET source_url = 'https://?query=1' WHERE id = $1", item
+        )
+
+
 async def test_seed_local_is_repeatable_and_preserves_settings(connection, monkeypatch):
     monkeypatch.setenv("OWNER_EMAIL", "Owner@Example.com")
     monkeypatch.setenv("APP_ENV", "local")
@@ -325,7 +432,8 @@ async def test_upgrade_downgrade_upgrade(database, connection):
     fresh = await asyncpg.connect(database)
     try:
         assert (
-            await fresh.fetchval("SELECT version_num FROM alembic_version") == "0004_profile_locale"
+            await fresh.fetchval("SELECT version_num FROM alembic_version")
+            == "0005_source_url_host"
         )
         assert await fresh.fetchval("SELECT count(*) FROM profiles") == 0
     finally:

@@ -10,6 +10,12 @@ aligns `profiles.locale` with contract `c35e8de`: 2–35 characters on insert an
 update. Existing invalid values make the upgrade fail without changing data;
 correct those values before retrying. Downgrade removes only this length check.
 
+Revision `0005_source_url_host` matches contract `f6ed465`: report item source
+URLs must use HTTP(S), have a nonempty host, contain no whitespace, and remain
+within 2048 characters. It validates existing rows without rewriting them;
+correct invalid URLs before retrying a failed upgrade. Downgrade restores the
+previous HTTP(S)-prefix and length check.
+
 From the repository root, with the worktree's git-ignored `.env` configured:
 
 ```sh
