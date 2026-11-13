@@ -57,9 +57,12 @@ services:
 
   # Vite dev server, proxies /api to the api service.
   web:
-    profiles: ["todo-web"]
     build: ./web
     env_file: .env
+    environment:
+      VITE_USE_MOCK_API: ${VITE_USE_MOCK_API:-false}
+      VITE_APP_ENV: ${APP_ENV:-local}
+      VITE_DEV_JWT_SECRET: ${DEV_JWT_SECRET:-change-me-local-only}
     ports:
       - "127.0.0.1:${WEB_PORT:-5173}:5173"
     depends_on:
