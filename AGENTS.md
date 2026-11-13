@@ -9,7 +9,7 @@ Change only the directory you own. Everything else: ask its owner in `HANDOFFS.m
 
 | Agent | Tool | Branch / worktree | Owns |
 |---|---|---|---|
-| lead + contracts (A) | Claude Code | `main` (main checkout) | root files, `docs/` (except `agent-memory/`), `contracts/`, `docker-compose.yml`, `Makefile` |
+| lead + contracts (A) | Claude Code | `main` (main checkout) | root files, `docs/` (except `agent-memory/`), `contracts/`, `docker-compose.yml`, `Makefile`, `.github/workflows/ci.yml`, tool permission files |
 | db (B) | Codex | `agent/db` → `../daily-brief-db` | `db/` |
 | api (C) | Codex | `agent/api` → `../daily-brief-api` | `api/` |
 | worker (D) | Claude Code | `agent/worker` → `../daily-brief-worker` | `worker/`, `.github/workflows/agent-worker.yml` |
