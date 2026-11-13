@@ -2294,10 +2294,150 @@
               "items": {
                 "type": "array",
                 "maxItems": 10,
-                "description": "Ordered by importance. Item ranks must equal their 1-based array position (1, 2, 3, ...). JSON Schema cannot express this; the worker validates it before submitting and the API rejects violations with 422 code `invalid_rank`.",
-                "items": {
-                  "$ref": "#/components/schemas/BriefResult/$defs/Item"
-                }
+                "description": "Ordered by importance. Each item's rank equals its 1-based position (enforced by prefixItems).",
+                "items": false,
+                "prefixItems": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 2
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 3
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 4
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 6
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 7
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 8
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 9
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
               }
             },
             "if": {
