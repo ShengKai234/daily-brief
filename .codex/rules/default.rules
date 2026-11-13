@@ -37,14 +37,15 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["git"],
+    pattern = ["git", ["status", "diff", "log", "show", "add", "commit", "fetch", "merge", "push", "rev-parse", "ls-files", "switch"]],
     decision = "allow",
-    justification = "git add/commit/fetch/merge/push to your own agent/* branch run without approval (forbidden rules below still win)",
+    justification = "Everyday git on your own branch. Local prefix rules cannot stop every push variant; GitHub rulesets on main/agent/* are the enforcement layer.",
     match = ["git commit -m x", "git push -u origin agent/api", "git fetch origin"],
+    not_match = ["git -C /tmp reset --hard", "git rebase main"],
 )
 
 prefix_rule(
-    pattern = ["git", ["reset", "clean", "filter-branch", "filter-repo"]],
+    pattern = ["git", ["reset", "clean", "filter-branch", "filter-repo", "rebase"]],
     decision = "forbidden",
     justification = "AGENTS.md hard rules: no destructive or history-rewriting git commands",
 )

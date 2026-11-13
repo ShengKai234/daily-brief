@@ -168,7 +168,7 @@ create table report_items (
   title        text not null check (char_length(title) between 1 and 200),
   summary      text not null check (char_length(summary) between 1 and 600),
   source_name  text not null check (char_length(source_name) between 1 and 100),
-  source_url   text not null check (source_url ~ '^https?://' and char_length(source_url) <= 2048),
+  source_url   text not null check (source_url ~ '^https?://[^\s/?#@]+([/?#]\S*)?$' and char_length(source_url) <= 2048),
   published_at timestamptz,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
