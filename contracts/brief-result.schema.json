@@ -269,7 +269,8 @@
         "source_url": {
           "type": "string",
           "format": "uri",
-          "pattern": "^https?://",
+          "pattern": "^https?://[^\\s/?#@]+([/?#][^\\s]*)?$",
+          "description": "Absolute http(s) URL with a non-empty host, actually found by the agent.",
           "maxLength": 2048
         },
         "published_at": {

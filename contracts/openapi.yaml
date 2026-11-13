@@ -516,7 +516,7 @@ paths:
       description: |
         Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,
         sections, items and usage and marks the job `succeeded`.
-        409 `job_not_running` if the job is not `running`; 409 `lease_lost` if `attempt` does not match;
+        409 `lease_lost` if the job is not `running` or `attempt` does not match;
         422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section
         are not exactly 1..n in array order. Sections are validated against topics owned by the job's
         user (not the user's current subscriptions), so settings edited mid-run do not reject output.
@@ -660,7 +660,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     Conflict:
       description: |
-        State conflict. Examples: `already_subscribed`, `job_not_running`, `topic_exists`.
+        State conflict. Examples: `already_subscribed`, `lease_lost`, `topic_exists`.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
