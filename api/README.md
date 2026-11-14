@@ -44,11 +44,13 @@ This helper prints an ephemeral token; do not save or commit it. It issues only
 the configured local owner's identity and has no HTTP endpoint. The frontend
 must arrange its local sign-in adapter separately.
 
-For a real local worker, set `LOCAL_WORKER_COMMAND` to an installed worker
-executable and its arguments, and choose its runner via `AGENT_RUNNER`. The
-command runs without a shell; the worker uses `API_BASE_URL` and
-`INTERNAL_SERVICE_TOKEN` from its environment. The worker checkout/CLI must be
-available in that runtime; the API image bundles only the deterministic stub.
+For a real local worker, choose its runner via `AGENT_RUNNER` and run `make worker`
+on the host. With no `LOCAL_WORKER_COMMAND`, local dispatch logs a no-op while
+the host worker polls for jobs. Alternatively, set `LOCAL_WORKER_COMMAND` to an
+installed worker executable and its arguments; it runs without a shell. The
+worker uses `API_BASE_URL` and `INTERNAL_SERVICE_TOKEN` from its environment.
+The worker checkout/CLI must be available in that runtime; the API image bundles
+only the deterministic stub.
 
 ## Authentication and production configuration
 
@@ -74,6 +76,23 @@ by the test suite. Infrastructure must provide CloudFront origin protection,
 concurrency limits and the Lambda runtime packaging before cloud use.
 
 ## Queue behavior and limits
+
+`POST /api/v1/jobs` requires an active user JWT and no request body. It accepts
+a manual job with `202`, sharing the scheduler's local-day quota and profile-row
+lock. It rejects an existing queued/running job with `409 job_in_progress`, no
+enabled subscriptions with `422 no_topics`, and an exhausted quota with
+`429 daily_limit_reached` (no Retry-After). Non-owner subscription runs return
+`403 owner_only` before any job is inserted.
+
+The transaction commits before dispatch. Dispatch failures are logged without
+remote error details, and the scheduler retries the queued job. The accepted
+response describes the queued job at commit; poll `GET /api/v1/jobs/{id}` for
+its current state, including an immediate stub completion. Polling returns only
+the caller's job, a manual/schedule trigger, timestamps, a completed report ID,
+and a known short failure code; unknown stored errors map to `worker_failed`.
+Manual reports have no slot ID or local delivery time.
+While a manual job is queued or running, the scheduler defers creating new slot
+jobs; deferred slots remain eligible after it finishes, subject to the same quota.
 
 Scheduler ticks serialize each user's daily quota decision, preserve slot IDs,
 skip nonexistent DST times and use the first occurrence of repeated times.

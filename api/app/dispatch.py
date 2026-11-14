@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import shlex
 from typing import Protocol
 
@@ -58,7 +59,7 @@ class LocalDispatcher:
         elif self.settings.agent_runner == "stub":
             await self.stub()
         else:
-            raise ValueError("LOCAL_WORKER_COMMAND is required for a real local worker")
+            logging.getLogger(__name__).info("Local dispatch deferred to the polling host worker")
 
     async def stub(self):
         """Deterministic local adapter; never invokes a model or consumes quota."""
@@ -95,3 +96,11 @@ class LocalDispatcher:
                 },
             }
             await self.queue.complete(claimed["job"]["id"], result, claimed["job"]["attempts"])
+
+
+def configured_dispatcher(settings, queue):
+    return (
+        GitHubDispatcher(settings)
+        if settings.worker_dispatcher == "github"
+        else LocalDispatcher(settings, queue)
+    )

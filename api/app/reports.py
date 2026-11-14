@@ -14,6 +14,11 @@ SECTION_FIELDS = "id topic_id title position status note"
 ITEM_FIELDS = "id rank title summary source_name source_url published_at"
 
 
+async def report_for_job(db, job_id, user_id):
+    row = await db.one("SELECT id FROM reports WHERE job_id=%s AND user_id=%s", (job_id, user_id))
+    return row["id"] if row else None
+
+
 async def store(db, job, result):
     row = await db.one(
         "INSERT INTO reports (user_id, job_id, report_date, slot_id) "

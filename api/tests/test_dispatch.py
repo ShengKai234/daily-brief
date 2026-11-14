@@ -1,3 +1,4 @@
+import logging
 import secrets
 from unittest.mock import AsyncMock, patch
 
@@ -5,7 +6,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.dispatch import GitHubDispatcher
+from app.dispatch import GitHubDispatcher, LocalDispatcher
 
 
 @pytest.mark.parametrize("status", [200, 204])
@@ -39,3 +40,12 @@ async def test_github_dispatch_failure_does_not_echo_credentials():
     with patch("app.dispatch.httpx.AsyncClient.post", AsyncMock(return_value=response)):
         with pytest.raises(RuntimeError, match="^Worker dispatch failed$"):
             await GitHubDispatcher(settings).dispatch()
+
+
+async def test_local_real_runner_without_command_defers_to_host_worker(caplog):
+    settings = Settings(agent_runner="claude_subscription")
+    queue = AsyncMock()
+    with caplog.at_level(logging.INFO):
+        await LocalDispatcher(settings, queue).dispatch()
+    assert "polling host worker" in caplog.text
+    queue.claim.assert_not_awaited()

@@ -9,6 +9,7 @@ from app.auth import DevVerifier, SupabaseVerifier
 from app.config import Settings
 from app.contract import SPEC
 from app.database import Database
+from app.dispatch import configured_dispatcher
 from app.problems import Problem, problem_response
 
 
@@ -22,6 +23,7 @@ def create_app(settings=None):
         DevVerifier(settings) if settings.auth_verifier == "dev" else SupabaseVerifier(settings)
     )
     app.state.queue = jobs.PostgresJobQueue(app.state.database, settings)
+    app.state.dispatcher = configured_dispatcher(settings, app.state.queue)
 
     @app.exception_handler(Problem)
     async def handle_problem(request, exc):
@@ -59,6 +61,7 @@ def create_app(settings=None):
         reports.router,
         marks.router,
         jobs.router,
+        jobs.public_router,
     ):
         app.include_router(router)
     return app

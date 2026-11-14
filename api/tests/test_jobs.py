@@ -82,6 +82,8 @@ async def test_report_pipeline_and_persistent_marks(env):
     "mutation",
     [
         "url",
+        "empty_host",
+        "userinfo_url",
         "length",
         "extra",
         "date",
@@ -105,6 +107,10 @@ async def test_invalid_result_is_blocked_without_writes(env, mutation):
     item = section["items"][0]
     if mutation == "url":
         item["source_url"] = "javascript:alert(1)"
+    if mutation == "empty_host":
+        item["source_url"] = "https:///path"
+    if mutation == "userinfo_url":
+        item["source_url"] = "https://user@example.com/news"
     if mutation == "length":
         item["summary"] = "x" * 601
     if mutation == "extra":

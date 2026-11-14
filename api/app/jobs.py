@@ -1,4 +1,5 @@
-from datetime import timedelta
+import logging
+from datetime import datetime, time, timedelta
 from typing import Annotated, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -9,17 +10,22 @@ from app import profiles, reports, subscriptions, topics
 from app.auth import internal_auth
 from app.contract import body, fields
 from app.problems import Problem
+from app.profiles import User
 
 router = APIRouter(prefix="/api/internal/jobs", dependencies=[Depends(internal_auth)])
+public_router = APIRouter(prefix="/api/v1/jobs")
 JOB_FIELDS = "id user_id slot_id scheduled_for attempts runner"
 MAX_ATTEMPTS = 2
 LEASE = timedelta(minutes=35)
+ERROR_CODES = {"worker_failed", "owner_only", "worker_lease_expired", "job_not_eligible"}
 
 
 class JobQueue(Protocol):
     async def claim(self, worker_id: str): ...
     async def complete(self, job_id: UUID, result: dict, attempt: int): ...
     async def fail(self, job_id: UUID, retryable: bool, attempt: int): ...
+    async def generate(self, user_id: UUID): ...
+    async def get_user_job(self, job_id: UUID, user_id: UUID): ...
 
 
 def owner_allowed(settings, job):
@@ -61,6 +67,37 @@ async def daily_count(db, user_id, start, end):
     return row["n"]
 
 
+def daily_window(timezone, now):
+    zone = ZoneInfo(timezone)
+    date = now.astimezone(zone).date()
+    return datetime.combine(date, time.min, zone), datetime.combine(
+        date + timedelta(days=1), time.min, zone
+    )
+
+
+async def has_active_job(db, user_id, *, manual_only=False):
+    row = await db.one(
+        "SELECT EXISTS(SELECT 1 FROM jobs WHERE user_id=%s "
+        "AND status IN ('queued','running') AND (%s IS FALSE OR slot_id IS NULL)) AS active",
+        (user_id, manual_only),
+    )
+    return row["active"]
+
+
+async def user_job(db, job):
+    failed = job["status"] == "failed"
+    return {
+        **fields(job, "id status created_at"),
+        "trigger": "manual" if job["slot_id"] is None else "schedule",
+        "report_id": await reports.report_for_job(db, job["id"], job["user_id"])
+        if job["status"] == "succeeded"
+        else None,
+        "error_code": (job["error"] if job["error"] in ERROR_CODES else "worker_failed")
+        if failed
+        else None,
+    }
+
+
 async def scheduled_today(db, user_id, slot_id, start, end):
     row = await db.one(
         "SELECT EXISTS(SELECT 1 FROM jobs WHERE user_id=%s AND slot_id=%s "
@@ -99,6 +136,41 @@ class PostgresJobQueue:
     def __init__(self, database, settings):
         self.database = database
         self.settings = settings
+
+    async def generate(self, user_id):
+        async with self.database.transaction() as db:
+            # Use the same per-user lock as the scheduler for active-job and
+            # quota decisions. Check fresh settings and timezone under that lock.
+            user = await profiles.lock_user(db, user_id)
+            if user["status"] != "active":
+                raise Problem(
+                    403, "account_disabled" if user["status"] == "disabled" else "account_pending"
+                )
+            settings = await profiles.job_settings(db, user_id)
+            if not owner_allowed(self.settings, {"user_id": user_id, "runner": settings["runner"]}):
+                raise Problem(403, "owner_only")
+            if await has_active_job(db, user_id):
+                raise Problem(409, "job_in_progress")
+            if not await subscriptions.brief_topics(db, user_id):
+                raise Problem(422, "no_topics")
+            now = (await db.one("SELECT now() AS current_time"))["current_time"]
+            start, end = daily_window(user["timezone"], now)
+            if await daily_count(db, user_id, start, end) >= settings["daily_run_limit"]:
+                raise Problem(429, "daily_limit_reached")
+            job = await db.one(
+                "INSERT INTO jobs (user_id,slot_id,scheduled_for,runner) "
+                "VALUES (%s,NULL,now(),%s) RETURNING *",
+                (user_id, settings["runner"]),
+            )
+            result = await user_job(db, job)
+        return result
+
+    async def get_user_job(self, job_id, user_id):
+        async with self.database.transaction() as db:
+            job = await db.one("SELECT * FROM jobs WHERE id=%s AND user_id=%s", (job_id, user_id))
+            if job is None:
+                raise Problem(404, "not_found")
+            return await user_job(db, job)
 
     async def claim(self, worker_id):
         async with self.database.transaction() as db:
@@ -220,6 +292,23 @@ def queue(request: Request) -> JobQueue:
 
 Queue = Annotated[JobQueue, Depends(queue)]
 Attempt = Annotated[int, Query(ge=1)]
+
+
+@public_router.post("", status_code=202, operation_id="generateNow")
+async def generate_now(request: Request, user: User, jobs: Queue):
+    result = await jobs.generate(user["user_id"])
+    # The row is committed before dispatch. A failed dispatch is retried by the
+    # scheduler and must never turn an accepted job into a failed HTTP request.
+    try:
+        await request.app.state.dispatcher.dispatch()
+    except Exception:
+        logging.getLogger(__name__).warning("Worker dispatch failed; queued job awaits scheduler")
+    return result
+
+
+@public_router.get("/{job_id}", operation_id="getJob")
+async def get_job(job_id: UUID, user: User, jobs: Queue):
+    return await jobs.get_user_job(job_id, user["user_id"])
 
 
 @router.post("/claim", operation_id="claimJob")

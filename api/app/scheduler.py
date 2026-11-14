@@ -1,13 +1,13 @@
 """EventBridge handler and reusable async tick. Scheduling has no HTTP route."""
 
 import asyncio
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from app import jobs, profiles, slots, subscriptions
 from app.config import Settings
 from app.database import Database
-from app.dispatch import GitHubDispatcher, LocalDispatcher
+from app.dispatch import configured_dispatcher
 from app.jobs import PostgresJobQueue
 
 
@@ -19,10 +19,11 @@ async def tick(database, settings, dispatcher, now=None):
     async with database.transaction() as db:
         await jobs.recover_leases(db, now)
         for user in await profiles.scheduler_users(db):
+            if await jobs.has_active_job(db, user["user_id"], manual_only=True):
+                continue
             zone = ZoneInfo(user["timezone"])
             local = now.astimezone(zone)
-            start = datetime.combine(local.date(), time.min, zone)
-            end = datetime.combine(local.date() + timedelta(days=1), time.min, zone)
+            start, end = jobs.daily_window(user["timezone"], now)
             count = await jobs.daily_count(db, user["user_id"], start, end)
             if not await subscriptions.brief_topics(db, user["user_id"]):
                 continue
@@ -53,11 +54,7 @@ async def configured_tick():
     settings = Settings.from_env()
     database = Database(settings)
     queue = PostgresJobQueue(database, settings)
-    dispatcher = (
-        GitHubDispatcher(settings)
-        if settings.worker_dispatcher == "github"
-        else LocalDispatcher(settings, queue)
-    )
+    dispatcher = configured_dispatcher(settings, queue)
     return await tick(database, settings, dispatcher)
 
 

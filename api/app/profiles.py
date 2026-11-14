@@ -57,6 +57,12 @@ async def job_profile(db, user_id):
     return await db.one("SELECT * FROM profiles WHERE user_id=%s", (user_id,))
 
 
+async def job_settings(db, user_id):
+    return await db.one(
+        "SELECT runner, model, daily_run_limit FROM agent_settings WHERE user_id=%s", (user_id,)
+    )
+
+
 @router.get("/me", operation_id="getMe")
 async def get_me(user: SignedIn):
     return user
@@ -110,10 +116,7 @@ async def redeem_invite(request: Request, user: SignedIn):
 @router.get("/agent-settings", operation_id="getAgentSettings")
 async def get_settings(request: Request, user: User):
     async with request.app.state.database.transaction() as db:
-        return await db.one(
-            "SELECT runner, model, daily_run_limit FROM agent_settings WHERE user_id=%s",
-            (user["user_id"],),
-        )
+        return await job_settings(db, user["user_id"])
 
 
 @router.patch("/agent-settings", operation_id="updateAgentSettings")
