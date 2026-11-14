@@ -44,6 +44,8 @@ tags:
     description: Generated reports and items.
   - name: marks
     description: Read state and notes on items.
+  - name: jobs
+    description: On-demand brief generation ("Generate now") and its status.
   - name: agent-settings
     description: Agent settings (reserved in the POC).
   - name: internal
@@ -470,6 +472,68 @@ paths:
               schema: { $ref: "#/components/schemas/Problem" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
+  /v1/jobs:
+    post:
+      operationId: generateNow
+      summary: Queue a brief for the caller now ("Generate now")
+      description: |
+        Creates one on-demand job for the caller (`slot_id` null, `scheduled_for` = now) with the runner
+        from the caller's agent settings, commits it, then dispatches the worker. No request body.
+        - Counts toward `daily_run_limit`, together with scheduled jobs, in the same day window the
+          scheduler uses (the caller's timezone). Over the limit: 429 `daily_limit_reached`.
+        - At most one `queued` or `running` job per user, checked atomically: otherwise 409 `job_in_progress`.
+        - The caller needs at least one enabled subscription: otherwise 422 `no_topics`.
+        - Runner `claude_subscription` and the caller is not the configured owner: 403 `owner_only`,
+          and no job is created (DESIGN 3.1).
+        - A dispatch failure does not fail the request: the job stays `queued` and the next scheduler
+          tick dispatches it again.
+      tags: [jobs]
+      responses:
+        "202":
+          description: Job queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Account gate (`account_pending`, `account_disabled`) or `owner_only`.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429":
+          description: |
+            `daily_limit_reached` (no `Retry-After`; try again the next day) or `rate_limited`.
+          headers:
+            Retry-After:
+              description: Seconds to wait (only for `rate_limited`).
+              schema: { type: integer, minimum: 0 }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+  /v1/jobs/{job_id}:
+    get:
+      operationId: getJob
+      summary: Status of one of the caller's jobs
+      description: For polling after `generateNow`. Another user's job is 404.
+      tags: [jobs]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenAccount" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
   /internal/jobs/claim:
     post:
       operationId: claimJob
@@ -660,7 +724,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     Conflict:
       description: |
-        State conflict. Examples: `already_subscribed`, `lease_lost`, `topic_exists`.
+        State conflict. Examples: `already_subscribed`, `job_in_progress`, `lease_lost`, `topic_exists`.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -939,6 +1003,27 @@ components:
         scheduled_for: { type: string, format: date-time }
         attempts: { type: integer, minimum: 0 }
         runner: { type: string, enum: [claude_subscription, anthropic_api] }
+    UserJob:
+      type: object
+      additionalProperties: false
+      description: A job as its owner sees it. Never includes worker output, prompts or raw errors.
+      required: [id, status, trigger, created_at, report_id, error_code]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        trigger:
+          type: string
+          enum: [schedule, manual]
+          description: "`manual` = created by `generateNow` (`slot_id` null)."
+        created_at: { type: string, format: date-time }
+        report_id:
+          type: [string, "null"]
+          format: uuid
+          description: Set when `status` is `succeeded`.
+        error_code:
+          type: [string, "null"]
+          description: |
+            Short code when `status` is `failed`, e.g. `worker_failed`, `owner_only`. Never free text.
     BriefRequest:
       type: object
       additionalProperties: false
