@@ -144,11 +144,14 @@ function ReportItemCard({ item, saving, onSaveMark }: ItemNoteEditorProps) {
   );
 }
 
+/** Today's date (YYYY-MM-DD) in the given IANA time zone; falls back to the browser's zone. */
+export function todayIn(timeZone?: string | null, now: Date = new Date()): string {
+  return getTodayInTimezone(timeZone || 'Asia/Taipei', now);
+}
+
 export function ReportsPage() {
   const { token, profile } = useAuth();
-  const [selectedDate, setSelectedDate] = useState<string>(() =>
-    getTodayInTimezone(profile?.timezone || 'Asia/Taipei'),
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(() => todayIn(profile?.timezone));
   const [userChangedDate, setUserChangedDate] = useState<boolean>(false);
   const [summaries, setSummaries] = useState<ReportSummary[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
@@ -171,7 +174,7 @@ export function ReportsPage() {
 
   useEffect(() => {
     if (!userChangedDate && profile?.timezone) {
-      setSelectedDate(getTodayInTimezone(profile.timezone));
+      setSelectedDate(todayIn(profile.timezone));
     }
   }, [profile?.timezone, userChangedDate]);
 

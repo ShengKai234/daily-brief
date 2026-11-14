@@ -27,6 +27,8 @@ import type {
   UserJob,
 } from './types';
 
+export const DEFAULT_REPORT_DATE = getTodayInTimezone('Asia/Taipei');
+
 export interface MockJobBehavior {
   pollsBeforeTerminal?: number;
   outcome?: 'succeeded' | 'failed';

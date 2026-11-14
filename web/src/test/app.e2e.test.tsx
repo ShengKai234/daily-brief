@@ -15,6 +15,7 @@ import {
   DEV_PENDING_USER_ID,
   issueDevJwt,
 } from '../auth/jwt';
+import { todayIn } from '../pages/ReportsPage';
 import { getNewestReport, getTodayInTimezone } from '../utils/date';
 
 function renderApp(initialEntries: string[] = ['/']) {
@@ -100,11 +101,12 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
     }
   });
 
-  it('computes today in profile timezone (e.g. 2026-11-14T23:30Z is 2026-11-15 in Asia/Taipei) and selects newest report by generated_at', () => {
+  it('computes today in profile timezone via todayIn (e.g. 2026-11-14T23:30Z is 2026-11-15 in Asia/Taipei) and selects newest report by generated_at', () => {
     const instant = new Date('2026-11-14T23:30:00Z');
+    expect(todayIn('Asia/Taipei', instant)).toBe('2026-11-15');
+    expect(todayIn('UTC', instant)).toBe('2026-11-14');
+    expect(todayIn('America/Los_Angeles', instant)).toBe('2026-11-14');
     expect(getTodayInTimezone('Asia/Taipei', instant)).toBe('2026-11-15');
-    expect(getTodayInTimezone('UTC', instant)).toBe('2026-11-14');
-    expect(getTodayInTimezone('America/Los_Angeles', instant)).toBe('2026-11-14');
 
     const ascendingReports = [
       { id: 'oldest', generated_at: '2026-11-14T05:00:00Z' },
