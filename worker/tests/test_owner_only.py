@@ -263,9 +263,36 @@ async def test_skipped_search_triggers_the_one_retry(request_dict, monkeypatch):
     assert len(spawned) == 2
 
 
-def test_prompt_requires_search_per_topic():
-    from brief_worker.prompt import SYSTEM_PROMPT
+def _command_prompt():
+    cmd = ClaudeSubscriptionRunner(OWNER).build_command()
+    return " ".join(cmd[cmd.index("--system-prompt") + 1].split())
 
-    text = " ".join(SYSTEM_PROMPT.split())
-    assert "at least one web search for every topic" in text
-    assert "never mark a topic insufficient_news without having searched" in text
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Required process",
+        "For EVERY topic run WebSearch before anything else",
+        "several different queries per topic (at least 3)",
+        "an English query, a query in the language of the locale",
+        "Use WebFetch on the most promising results to confirm the publication date",
+        "Aim to fill item_count items per topic",
+        "Only after this research may you deliver the JSON",
+        "Never mark a topic insufficient_news unless you searched it with several queries",
+        "say in note what you searched",
+        "Never answer from memory",
+    ],
+)
+def test_command_system_prompt_has_required_process(phrase):
+    assert phrase in _command_prompt()
+
+
+def test_prompt_no_longer_frames_job_as_json_only():
+    assert "Your only job is to produce one JSON object" not in _command_prompt()
+
+
+def test_user_prompt_names_the_report_date_and_locale(request_dict):
+    from brief_worker.prompt import build_user_prompt
+
+    text = build_user_prompt(request_dict)
+    assert request_dict["report_date"] in text and request_dict["locale"] in text
