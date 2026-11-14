@@ -14,12 +14,13 @@ import time
 
 from ..errors import OutputInvalidError, OwnerOnlyError
 from ..prompt import SYSTEM_PROMPT, build_user_prompt
-from ..validation import load_schema
+from ..validation import cli_schema
 from .base import BriefRequest, BriefResult
 
 ALLOWED_TOOLS = ("WebSearch", "WebFetch")
 # Only these variables reach the claude process; INTERNAL_SERVICE_TOKEN and others stay out.
-PASS_ENV = ("PATH", "HOME", "LANG", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN")
+# USER is needed for the macOS keychain login (without it the CLI answers "Not logged in").
+PASS_ENV = ("PATH", "HOME", "USER", "LANG", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN")
 
 
 class ClaudeSubscriptionRunner:
@@ -51,7 +52,7 @@ class ClaudeSubscriptionRunner:
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(load_schema()),
+            json.dumps(cli_schema()),
             "--tools",
             tools,
             "--allowedTools",
@@ -112,13 +113,35 @@ class ClaudeSubscriptionRunner:
         if not isinstance(result, dict):
             raise OutputInvalidError("no JSON object in claude output")
         usage = envelope.get("usage") or {}
-        searches = (usage.get("server_tool_use") or {}).get("web_search_requests", 0)
+        model_usage = envelope.get("modelUsage")
+        per_model = list(model_usage.values()) if isinstance(model_usage, dict) else []
+        per_model = [m for m in per_model if isinstance(m, dict)]
         result["usage"] = {
             "runner": "claude_subscription",
             "model": self.model,
             "duration_ms": duration_ms,
-            "search_count": searches if isinstance(searches, int) else 0,
-            "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
+            "search_count": _search_count(usage, per_model),
+            "input_tokens": _tokens(usage.get("input_tokens"), per_model, "inputTokens"),
+            "output_tokens": _tokens(usage.get("output_tokens"), per_model, "outputTokens"),
         }
         return result
+
+
+def _int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _search_count(usage: dict, per_model: list[dict]) -> int:
+    """Web searches used. Field names are from memory of the CLI output (unverified, VERIFIED 5):
+    `usage.server_tool_use.web_search_requests` and `modelUsage.<model>.webSearchRequests`.
+    The top-level usage may only cover the last turn, so take the larger of the two sources."""
+    tool_use = usage.get("server_tool_use")
+    top = _int(tool_use.get("web_search_requests")) if isinstance(tool_use, dict) else 0
+    by_model = sum(_int(m.get("webSearchRequests")) for m in per_model)
+    return max(top, by_model)
+
+
+def _tokens(top: object, per_model: list[dict], key: str) -> int | None:
+    by_model = sum(_int(m.get(key)) for m in per_model)
+    value = max(_int(top), by_model)
+    return value if (top is not None or per_model) else None

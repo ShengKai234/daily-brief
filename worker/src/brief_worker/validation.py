@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -32,6 +33,33 @@ def load_schema() -> dict[str, Any]:
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc) and " " not in value
+
+
+def cli_schema() -> dict[str, Any]:
+    """Looser copy of the contract schema for `claude --json-schema`.
+
+    The CLI checks the schema with strict draft-07 Ajv, which rejects `$schema` (2020-12),
+    `prefixItems`, and `if/then`. This copy only steers the model; `validate_result` still
+    enforces the full contract schema on the output. Derived from the contract, never edited
+    by hand, so it cannot drift.
+    """
+    schema = copy.deepcopy(load_schema())
+
+    def loosen(node: Any) -> None:
+        if isinstance(node, dict):
+            for key in ("$schema", "$id", "$comment", "if", "then", "else"):
+                node.pop(key, None)
+            if "prefixItems" in node:
+                node.pop("prefixItems")
+                node["items"] = {"$ref": "#/$defs/Item"}
+            for value in node.values():
+                loosen(value)
+        elif isinstance(node, list):
+            for value in node:
+                loosen(value)
+
+    loosen(schema)
+    return schema
 
 
 def _path(parts) -> str:
