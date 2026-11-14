@@ -25,6 +25,7 @@ export type ItemMark = ApiSchemas['ItemMark'];
 export type ItemMarkUpdate = ApiSchemas['ItemMarkUpdate'];
 export type AgentSettings = ApiSchemas['AgentSettings'];
 export type AgentSettingsUpdate = ApiSchemas['AgentSettingsUpdate'];
+export type UserJob = ApiSchemas['UserJob'];
 
 export type RedeemInviteRequest =
   operations['redeemInvite']['requestBody']['content']['application/json'];

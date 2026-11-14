@@ -23,9 +23,16 @@ import type {
   Topic,
   TopicCreate,
   TopicUpdate,
+  UserJob,
 } from './types';
 
 export const DEFAULT_REPORT_DATE = '2026-11-12';
+
+export interface MockJobBehavior {
+  pollsBeforeTerminal?: number;
+  outcome?: 'succeeded' | 'failed';
+  errorCode?: string;
+}
 
 interface UserStore {
   profile: Profile;
@@ -35,6 +42,7 @@ interface UserStore {
   agentSettings: AgentSettings;
   reports: Report[];
   marks: Record<string, ItemMark>;
+  jobs: UserJob[];
 }
 
 interface MockDatabase {
@@ -209,6 +217,16 @@ function createInitialOwnerStore(): UserStore {
     },
     reports: [report],
     marks: {},
+    jobs: [
+      {
+        id: '70000000-0000-4000-8000-000000000001',
+        status: 'succeeded',
+        trigger: 'schedule',
+        created_at: '2026-11-12T07:00:00Z',
+        report_id: report.id,
+        error_code: null,
+      },
+    ],
   };
 }
 
@@ -229,6 +247,12 @@ function createInitialDb(): MockDatabase {
 
 let db: MockDatabase = createInitialDb();
 let idCounter = 100;
+let mockJobBehavior: MockJobBehavior = {
+  pollsBeforeTerminal: 0,
+  outcome: 'succeeded',
+  errorCode: 'worker_failed',
+};
+let jobPollCounts: Record<string, number> = {};
 
 function nextUuid(prefix: string = '90000000'): string {
   idCounter += 1;
@@ -236,9 +260,23 @@ function nextUuid(prefix: string = '90000000'): string {
   return `${prefix}-0000-4000-8000-${tail}`;
 }
 
+export function setMockJobBehavior(behavior: MockJobBehavior): void {
+  mockJobBehavior = {
+    pollsBeforeTerminal: behavior.pollsBeforeTerminal ?? 0,
+    outcome: behavior.outcome ?? 'succeeded',
+    errorCode: behavior.errorCode ?? 'worker_failed',
+  };
+}
+
 export function resetMockApiState(): void {
   db = createInitialDb();
   idCounter = 100;
+  mockJobBehavior = {
+    pollsBeforeTerminal: 0,
+    outcome: 'succeeded',
+    errorCode: 'worker_failed',
+  };
+  jobPollCounts = {};
 }
 
 function problemResponse(
@@ -306,6 +344,7 @@ function getOrCreateUserStore(sub: string, email: string): UserStore {
     },
     reports: [],
     marks: {},
+    jobs: [],
   };
   db.users[sub] = newStore;
   return newStore;
@@ -345,7 +384,7 @@ function buildReportSummary(
     id: report.id,
     report_date: report.report_date,
     slot_id: report.slot_id,
-    local_time: slot ? slot.local_time : '07:00',
+    local_time: report.slot_id ? (slot ? slot.local_time : '07:00') : null,
     generated_at: report.generated_at,
     section_count: report.sections.length,
     item_count: itemCount,
@@ -839,6 +878,147 @@ export async function mockFetch(
         'Agent settings are reserved in the POC and cannot be modified.',
       );
     }
+  }
+
+  // POST /api/v1/jobs (generateNow)
+  if (pathname === '/api/v1/jobs' && method === 'POST') {
+    if (
+      store.agentSettings.runner === 'claude_subscription' &&
+      store.profile.user_id !== DEV_OWNER_USER_ID
+    ) {
+      return problemResponse(
+        403,
+        'owner_only',
+        'Owner Only',
+        'The subscription runner may only process jobs for the configured owner.',
+      );
+    }
+
+    if (store.jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
+      return problemResponse(
+        409,
+        'job_in_progress',
+        'Job In Progress',
+        'A brief generation job is already queued or running.',
+      );
+    }
+
+    const enabledSubs = [...store.subscriptions]
+      .filter((s) => s.enabled)
+      .sort((a, b) => a.position - b.position);
+    if (enabledSubs.length === 0) {
+      return problemResponse(
+        422,
+        'no_topics',
+        'No Enabled Topics',
+        'Subscribe to and enable at least one topic before generating a brief.',
+      );
+    }
+
+    if (store.jobs.length >= store.agentSettings.daily_run_limit) {
+      return problemResponse(
+        429,
+        'daily_limit_reached',
+        'Daily Limit Reached',
+        'Daily run limit reached; try again tomorrow.',
+      );
+    }
+
+    const createdJob: UserJob = {
+      id: nextUuid('71000000'),
+      status: 'queued',
+      trigger: 'manual',
+      created_at: nowIso(),
+      report_id: null,
+      error_code: null,
+    };
+    store.jobs.push(createdJob);
+    jobPollCounts[createdJob.id] = 0;
+    return jsonResponse(202, createdJob);
+  }
+
+  // GET /api/v1/jobs/{job_id} (getJob)
+  const jobMatch = pathname.match(/^\/api\/v1\/jobs\/([^/]+)$/);
+  if (jobMatch && method === 'GET') {
+    const jobId = jobMatch[1];
+    const jobIndex = store.jobs.findIndex((j) => j.id === jobId);
+    if (jobIndex === -1) {
+      return problemResponse(404, 'not_found', 'Not Found', 'Job not found.');
+    }
+
+    const job = store.jobs[jobIndex];
+    if (job.status === 'queued' || job.status === 'running') {
+      const count = (jobPollCounts[job.id] ?? 0) + 1;
+      jobPollCounts[job.id] = count;
+      const requiredPolls = mockJobBehavior.pollsBeforeTerminal ?? 0;
+
+      if (count <= requiredPolls) {
+        const runningJob: UserJob = {
+          ...job,
+          status: 'running',
+        };
+        store.jobs[jobIndex] = runningJob;
+        return jsonResponse(200, runningJob);
+      }
+
+      if (mockJobBehavior.outcome === 'failed') {
+        const failedJob: UserJob = {
+          ...job,
+          status: 'failed',
+          report_id: null,
+          error_code: mockJobBehavior.errorCode || 'worker_failed',
+        };
+        store.jobs[jobIndex] = failedJob;
+        return jsonResponse(200, failedJob);
+      }
+
+      const enabledSubs = [...store.subscriptions]
+        .filter((s) => s.enabled)
+        .sort((a, b) => a.position - b.position);
+
+      const newReportId = nextUuid('41000000');
+      const newSections: ReportSection[] = enabledSubs.map((sub, idx) => ({
+        id: nextUuid('51000000'),
+        topic_id: sub.topic_id,
+        title: sub.topic.title,
+        position: idx,
+        status: 'ok',
+        note: null,
+        items: [
+          {
+            id: nextUuid('61000000'),
+            rank: 1,
+            title: `On-demand brief update for ${sub.topic.title}`,
+            summary: `Fresh on-demand summary compiled for ${sub.topic.title} during manual brief run.`,
+            source_name: 'On-Demand Wire',
+            source_url: 'https://example.com/news/on-demand-update',
+            published_at: '2026-11-12T10:40:00Z',
+            mark: null,
+          },
+        ],
+      }));
+
+      const newReport: Report = {
+        id: newReportId,
+        report_date: DEFAULT_REPORT_DATE,
+        slot_id: null,
+        generated_at: '2026-11-12T10:45:00Z',
+        visibility: 'private',
+        sections: newSections,
+      };
+      store.reports.unshift(newReport);
+
+      const succeededJob: UserJob = {
+        ...job,
+        status: 'succeeded',
+        report_id: newReportId,
+        error_code: null,
+      };
+      store.jobs[jobIndex] = succeededJob;
+      return jsonResponse(200, succeededJob);
+    }
+
+    return jsonResponse(200, job);
   }
 
   return problemResponse(404, 'not_found', 'Not Found', `Unhandled route ${method} ${pathname}`);

@@ -6,6 +6,7 @@ interface ImportMetaEnv {
   readonly VITE_DEV_JWT_SECRET?: string;
   readonly VITE_SUPABASE_URL?: string;
   readonly VITE_SUPABASE_ANON_KEY?: string;
+  readonly VITE_JOB_POLL_INTERVAL_MS?: string;
 }
 
 interface ImportMeta {

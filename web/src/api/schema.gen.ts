@@ -251,6 +251,55 @@ export interface paths {
         patch: operations["updateAgentSettings"];
         trace?: never;
     };
+    "/v1/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue a brief for the caller now ("Generate now")
+         * @description Creates one on-demand job for the caller (`slot_id` null, `scheduled_for` = now) with the runner
+         *     from the caller's agent settings, commits it, then dispatches the worker. No request body.
+         *     - Counts toward `daily_run_limit`, together with scheduled jobs, in the same day window the
+         *       scheduler uses (the caller's timezone). Over the limit: 429 `daily_limit_reached`.
+         *     - At most one `queued` or `running` job per user, checked atomically: otherwise 409 `job_in_progress`.
+         *     - The caller needs at least one enabled subscription: otherwise 422 `no_topics`.
+         *     - Runner `claude_subscription` and the caller is not the configured owner: 403 `owner_only`,
+         *       and no job is created (DESIGN 3.1).
+         *     - A dispatch failure does not fail the request: the job stays `queued` and the next scheduler
+         *       tick dispatches it again.
+         */
+        post: operations["generateNow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status of one of the caller's jobs
+         * @description For polling after `generateNow`. Another user's job is 404.
+         */
+        get: operations["getJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/jobs/claim": {
         parameters: {
             query?: never;
@@ -573,6 +622,27 @@ export interface components {
             /** @enum {string} */
             runner: "claude_subscription" | "anthropic_api";
         };
+        /** @description A job as its owner sees it. Never includes worker output, prompts or raw errors. */
+        UserJob: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "queued" | "running" | "succeeded" | "failed";
+            /**
+             * @description `manual` = created by `generateNow` (`slot_id` null).
+             * @enum {string}
+             */
+            trigger: "schedule" | "manual";
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: uuid
+             * @description Set when `status` is `succeeded`.
+             */
+            report_id: string | null;
+            /** @description Short code when `status` is `failed`, e.g. `worker_failed`, `owner_only`. Never free text. */
+            error_code: string | null;
+        };
         BriefRequest: {
             /** Format: uuid */
             job_id: string;
@@ -806,7 +876,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description State conflict. Examples: `already_subscribed`, `lease_lost`, `topic_exists`. */
+        /** @description State conflict. Examples: `already_subscribed`, `job_in_progress`, `lease_lost`, `topic_exists`. */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1409,6 +1479,76 @@ export interface operations {
                 };
             };
             422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    generateNow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Job queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserJob"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Account gate (`account_pending`, `account_disabled`) or `owner_only`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            /** @description `daily_limit_reached` (no `Retry-After`; try again the next day) or `rate_limited`. */
+            429: {
+                headers: {
+                    /** @description Seconds to wait (only for `rate_limited`). */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ForbiddenAccount"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
     };

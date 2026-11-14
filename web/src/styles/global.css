@@ -321,6 +321,7 @@ a:hover {
 }
 
 .btn:disabled {
+  background-color: var(--color-surface-muted);
   color: var(--color-text-subtle);
   border-color: var(--color-border);
   cursor: not-allowed;

@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppRoutes } from '../App';
 import { ApiError, apiClient } from '../api/client';
+import { setMockJobBehavior } from '../api/mockApi';
 import { AuthProvider } from '../auth/AuthContext';
 import {
   DEV_OWNER_EMAIL,
@@ -201,6 +202,57 @@ describe('OpenAPI contract & mock API enforcement', () => {
       problem: { status: 422, code: 'validation_error' },
     });
   });
+
+  it('enforces POST /v1/jobs and GET /v1/jobs/{job_id} contract rules (202, 409, 429, 422, 403, 404)', async () => {
+    const ownerToken = await issueDevJwt({
+      sub: DEV_OWNER_USER_ID,
+      email: DEV_OWNER_EMAIL,
+    });
+
+    // 1. Create first manual job (202 queued)
+    setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
+    const job1 = await apiClient.generateNow(ownerToken);
+    expect(job1.status).toBe('queued');
+    expect(job1.trigger).toBe('manual');
+    expect(job1.report_id).toBeNull();
+
+    // 2. Concurrent POST /v1/jobs while job1 is queued -> 409 job_in_progress
+    await expect(apiClient.generateNow(ownerToken)).rejects.toMatchObject({
+      problem: { status: 409, code: 'job_in_progress' },
+    });
+
+    // 3. Poll 1 -> running; Poll 2 -> succeeded with report_id
+    const poll1 = await apiClient.getJob(ownerToken, job1.id);
+    expect(poll1.status).toBe('running');
+    const poll2 = await apiClient.getJob(ownerToken, job1.id);
+    expect(poll2.status).toBe('succeeded');
+    expect(poll2.report_id).toBeTruthy();
+
+    // 4. Create second manual job and finish it -> hits daily_run_limit (3: 1 scheduled + 2 manual)
+    setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 0 });
+    const job2 = await apiClient.generateNow(ownerToken);
+    await apiClient.getJob(ownerToken, job2.id);
+
+    // 5. Third manual job -> 429 daily_limit_reached
+    await expect(apiClient.generateNow(ownerToken)).rejects.toMatchObject({
+      problem: { status: 429, code: 'daily_limit_reached' },
+    });
+
+    // 6. Non-owner active user calling POST /v1/jobs with claude_subscription -> 403 owner_only
+    const otherToken = await issueDevJwt({
+      sub: DEV_PENDING_USER_ID,
+      email: DEV_PENDING_EMAIL,
+    });
+    await apiClient.redeemInvite(otherToken, { code: 'WELCOME-2026' });
+    await expect(apiClient.generateNow(otherToken)).rejects.toMatchObject({
+      problem: { status: 403, code: 'owner_only' },
+    });
+
+    // 7. Non-owner cannot read owner's job -> 404 not_found
+    await expect(apiClient.getJob(otherToken, job1.id)).rejects.toMatchObject({
+      problem: { status: 404, code: 'not_found' },
+    });
+  });
 });
 
 describe('End-to-end user flows against the mock API', () => {
@@ -386,6 +438,111 @@ describe('End-to-end user flows against the mock API', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Account status')).toHaveTextContent('active');
       expect(screen.getByRole('link', { name: /Topics & Slots/i })).toBeInTheDocument();
+    });
+  });
+
+  it('handles Generate now button polling to succeeded/failed and displays 409, 429, 422, and 403 error states', async () => {
+    const user = userEvent.setup();
+    renderApp(['/']);
+
+    await user.click(
+      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
+    );
+
+    const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
+    expect(generateBtn).not.toBeDisabled();
+
+    // 1. Trigger Generate now -> queued -> running -> succeeded and loads new On-demand report
+    setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
+    await user.click(generateBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /On-demand · 6\/6 unread/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: /On-demand brief update for Stock Market/i }),
+      ).toBeInTheDocument();
+    });
+
+    // 2. Trigger second manual run that transitions to failed -> shows plain error message
+    setMockJobBehavior({
+      outcome: 'failed',
+      pollsBeforeTerminal: 0,
+      errorCode: 'llm_timeout',
+    });
+    await user.click(screen.getByRole('button', { name: /Generate now/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Brief generation failed (llm_timeout).',
+      );
+    });
+
+    // 3. Trigger third manual run -> hits 429 daily_limit_reached
+    await user.click(screen.getByRole('button', { name: /Generate now/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Daily limit reached, try tomorrow.',
+      );
+    });
+  });
+
+  it('displays 422 no_topics with link to /settings, 409 job_in_progress, and 403 owner_only on Generate now', async () => {
+    const user = userEvent.setup();
+    const ownerToken = await issueDevJwt({
+      sub: DEV_OWNER_USER_ID,
+      email: DEV_OWNER_EMAIL,
+    });
+
+    // Disable all topic subscriptions so POST /v1/jobs returns 422 no_topics
+    const { subscriptions } = await apiClient.listSubscriptions(ownerToken);
+    for (const sub of subscriptions) {
+      await apiClient.updateSubscription(ownerToken, sub.id, { enabled: false });
+    }
+
+    renderApp(['/']);
+    await user.click(
+      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
+    );
+
+    const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
+    await user.click(generateBtn);
+
+    await waitFor(() => {
+      const alert = screen.getByRole('alert');
+      expect(alert).toHaveTextContent('No enabled topic subscriptions found.');
+      const settingsLink = within(alert).getByRole('link', {
+        name: /Manage topic subscriptions/i,
+      });
+      expect(settingsLink).toHaveAttribute('href', '/settings');
+    });
+
+    // Re-enable first subscription and start a background job so clicking Generate now gets 409 job_in_progress
+    await apiClient.updateSubscription(ownerToken, subscriptions[0].id, {
+      enabled: true,
+    });
+    await apiClient.generateNow(ownerToken);
+
+    await user.click(screen.getByRole('button', { name: /Generate now/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /A brief generation job is already in progress/i,
+      );
+    });
+
+    // Sign out, sign in as pending user, activate with invite code, and verify 403 owner_only on Generate now
+    await user.click(screen.getByRole('button', { name: /Sign out/i }));
+    await user.click(screen.getByRole('button', { name: /Sign in as Pending User/i }));
+    const codeInput = await screen.findByLabelText('Invite Code');
+    await user.type(codeInput, 'WELCOME-2026');
+    await user.click(screen.getByRole('button', { name: /Activate Account/i }));
+
+    const nonOwnerGenBtn = await screen.findByRole('button', { name: /Generate now/i });
+    await user.click(nonOwnerGenBtn);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/owner_only/i);
     });
   });
 });

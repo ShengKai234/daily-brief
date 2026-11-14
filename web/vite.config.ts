@@ -25,5 +25,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     css: true,
+    env: {
+      VITE_JOB_POLL_INTERVAL_MS: '25',
+    },
   },
 });

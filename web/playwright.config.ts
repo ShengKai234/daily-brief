@@ -16,6 +16,7 @@ export default defineConfig({
     env: {
       VITE_USE_MOCK_API: 'true',
       VITE_APP_ENV: 'local',
+      VITE_JOB_POLL_INTERVAL_MS: '100',
     },
   },
 });

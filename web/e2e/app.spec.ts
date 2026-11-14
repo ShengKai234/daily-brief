@@ -29,6 +29,14 @@ test('usable at phone width (375x667) across sign-in, report, notes, settings, a
   );
   await expectNoHorizontalOverflow(page);
 
+  // Trigger on-demand brief generation ("Generate now"), poll until succeeded, and load new edition
+  await page.getByRole('button', { name: 'Generate now' }).click();
+  await expect(page.getByRole('button', { name: /On-demand · 6\/6 unread/i })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: /On-demand brief update for Stock Market/i }),
+  ).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
   // Navigate to Topics & Slots
   await page.getByRole('link', { name: 'Topics & Slots' }).click();
   await expect(page.getByRole('heading', { name: /Topics & Delivery Slots/i })).toBeVisible();

@@ -1,8 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError, apiClient } from '../api/client';
 import { DEFAULT_REPORT_DATE } from '../api/mockApi';
-import type { Report, ReportItem, ReportSummary } from '../api/types';
+import type { Report, ReportItem, ReportSummary, UserJob } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const MAX_POLL_DURATION_MS = 15 * 60 * 1000;
+
+function getPollIntervalMs(): number {
+  const configured = Number(import.meta.env.VITE_JOB_POLL_INTERVAL_MS);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return DEFAULT_POLL_INTERVAL_MS;
+}
 
 interface ItemNoteEditorProps {
   item: ReportItem;
@@ -143,8 +155,19 @@ export function ReportsPage() {
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [submittingJob, setSubmittingJob] = useState<boolean>(false);
+  const [activeJob, setActiveJob] = useState<UserJob | null>(null);
+  const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
+  const [pollTick, setPollTick] = useState<number>(0);
+  const [jobErrorCode, setJobErrorCode] = useState<string | null>(null);
+  const [jobErrorMessage, setJobErrorMessage] = useState<string | null>(null);
+  const preferredReportIdRef = useRef<string | null>(null);
+
+  const isJobActive =
+    submittingJob || activeJob?.status === 'queued' || activeJob?.status === 'running';
+
   const loadReportsForDate = useCallback(
-    async (dateStr: string) => {
+    async (dateStr: string, preferredReportId?: string) => {
       if (!token) {
         return;
       }
@@ -153,7 +176,11 @@ export function ReportsPage() {
       try {
         const res = await apiClient.listReports(token, dateStr);
         setSummaries(res.reports);
-        if (res.reports.length > 0) {
+        const targetId = preferredReportId ?? preferredReportIdRef.current;
+        if (targetId && res.reports.some((r) => r.id === targetId)) {
+          preferredReportIdRef.current = null;
+          setSelectedReportId(targetId);
+        } else if (res.reports.length > 0) {
           setSelectedReportId(res.reports[0].id);
         } else {
           setSelectedReportId(null);
@@ -208,6 +235,122 @@ export function ReportsPage() {
       cancelled = true;
     };
   }, [token, selectedReportId]);
+
+  useEffect(() => {
+    if (!token || !activeJob || !pollStartedAt) {
+      return;
+    }
+    if (activeJob.status !== 'queued' && activeJob.status !== 'running') {
+      return;
+    }
+
+    let cancelled = false;
+    const intervalMs = getPollIntervalMs();
+
+    const timerId = window.setTimeout(async () => {
+      if (cancelled) {
+        return;
+      }
+      if (Date.now() - pollStartedAt >= MAX_POLL_DURATION_MS) {
+        setActiveJob(null);
+        setPollStartedAt(null);
+        setJobErrorCode('poll_timeout');
+        setJobErrorMessage('Brief generation timed out after 15 minutes.');
+        return;
+      }
+
+      try {
+        const updated = await apiClient.getJob(token, activeJob.id);
+        if (cancelled) {
+          return;
+        }
+        setActiveJob(updated);
+        if (updated.status === 'queued' || updated.status === 'running') {
+          setPollTick((prev) => prev + 1);
+        } else if (updated.status === 'succeeded') {
+          setPollStartedAt(null);
+          if (updated.report_id) {
+            preferredReportIdRef.current = updated.report_id;
+            const loaded = await apiClient.getReport(token, updated.report_id);
+            if (!cancelled) {
+              if (loaded.report_date !== selectedDate) {
+                setSelectedDate(loaded.report_date);
+              } else {
+                await loadReportsForDate(loaded.report_date, loaded.id);
+              }
+              setSelectedReportId(loaded.id);
+              setReport(loaded);
+            }
+          } else {
+            await loadReportsForDate(selectedDate);
+          }
+        } else if (updated.status === 'failed') {
+          setPollStartedAt(null);
+          const code = updated.error_code || 'worker_failed';
+          setJobErrorCode(code);
+          setJobErrorMessage(`Brief generation failed (${code}).`);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setActiveJob(null);
+          setPollStartedAt(null);
+          if (err instanceof ApiError) {
+            setJobErrorCode(err.problem.code);
+            setJobErrorMessage(`${err.problem.detail} (${err.problem.code})`);
+          } else {
+            setJobErrorMessage(err instanceof Error ? err.message : 'Failed to poll job status.');
+          }
+        }
+      }
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [token, activeJob, pollStartedAt, pollTick, selectedDate, loadReportsForDate]);
+
+  const handleGenerateNow = async () => {
+    if (!token || isJobActive) {
+      return;
+    }
+    setSubmittingJob(true);
+    setJobErrorCode(null);
+    setJobErrorMessage(null);
+    setError(null);
+    try {
+      const created = await apiClient.generateNow(token);
+      setActiveJob(created);
+      setPollStartedAt(Date.now());
+      setPollTick(0);
+    } catch (err) {
+      setActiveJob(null);
+      setPollStartedAt(null);
+      if (err instanceof ApiError) {
+        const code = err.problem.code;
+        setJobErrorCode(code);
+        if (code === 'job_in_progress') {
+          setJobErrorMessage(
+            'A brief generation job is already in progress. Please wait for it to finish.',
+          );
+        } else if (code === 'daily_limit_reached') {
+          setJobErrorMessage('Daily limit reached, try tomorrow.');
+        } else if (code === 'no_topics') {
+          setJobErrorMessage('No enabled topic subscriptions found.');
+        } else if (code === 'owner_only') {
+          setJobErrorMessage(
+            'On-demand generation with the subscription runner is restricted to the owner account (owner_only).',
+          );
+        } else {
+          setJobErrorMessage(`${err.problem.detail} (${code})`);
+        }
+      } else {
+        setJobErrorMessage(err instanceof Error ? err.message : 'Failed to start brief generation.');
+      }
+    } finally {
+      setSubmittingJob(false);
+    }
+  };
 
   const handleSaveMark = async (itemId: string, read: boolean, note: string | null) => {
     if (!token || !report) {
@@ -272,8 +415,32 @@ export function ReportsPage() {
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
           />
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={isJobActive}
+            aria-busy={isJobActive}
+            onClick={() => void handleGenerateNow()}
+          >
+            {isJobActive ? 'Generating...' : 'Generate now'}
+          </button>
         </div>
       </div>
+
+      {isJobActive && activeJob ? (
+        <div className="alert" role="status">
+          Generating brief ({activeJob.status})... Polling every 5 seconds.
+        </div>
+      ) : null}
+
+      {jobErrorMessage ? (
+        <div className="alert" role="alert">
+          <span>{jobErrorMessage}</span>
+          {jobErrorCode === 'no_topics' ? (
+            <Link to="/settings">Manage topic subscriptions</Link>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="alert" role="alert">
@@ -299,6 +466,9 @@ export function ReportsPage() {
               <div className="row">
                 {summaries.map((summary) => {
                   const isSelected = summary.id === selectedReportId;
+                  const editionLabel = summary.local_time
+                    ? `Slot ${summary.local_time}`
+                    : 'On-demand';
                   return (
                     <button
                       key={summary.id}
@@ -307,8 +477,7 @@ export function ReportsPage() {
                       aria-pressed={isSelected}
                       onClick={() => setSelectedReportId(summary.id)}
                     >
-                      Slot {summary.local_time || 'Scheduled'} · {summary.unread_count}/
-                      {summary.item_count} unread
+                      {editionLabel} · {summary.unread_count}/{summary.item_count} unread
                     </button>
                   );
                 })}

@@ -21,6 +21,7 @@ import type {
   Topic,
   TopicCreate,
   TopicUpdate,
+  UserJob,
 } from './types';
 
 export class ApiError extends Error {
@@ -198,5 +199,13 @@ export const apiClient = {
 
   updateAgentSettings(token: string, body: AgentSettingsUpdate): Promise<AgentSettings> {
     return request<AgentSettings>('/v1/agent-settings', { method: 'PATCH', token, body });
+  },
+
+  generateNow(token: string): Promise<UserJob> {
+    return request<UserJob>('/v1/jobs', { method: 'POST', token });
+  },
+
+  getJob(token: string, jobId: string): Promise<UserJob> {
+    return request<UserJob>(`/v1/jobs/${encodeURIComponent(jobId)}`, { token });
   },
 };
