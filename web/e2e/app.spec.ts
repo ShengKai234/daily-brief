@@ -1,0 +1,62 @@
+import { expect, test } from '@playwright/test';
+import { getTodayInTimezone } from '../src/utils/date';
+
+async function expectNoHorizontalOverflow(page: import('@playwright/test').Page) {
+  const overflow = await page.evaluate(() => {
+    const doc = document.documentElement;
+    return doc.scrollWidth > doc.clientWidth;
+  });
+  expect(overflow).toBe(false);
+}
+
+test('usable at phone width (375x667) across sign-in, report, notes, settings, and profile', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Sign In to Daily Brief' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
+  await page.getByRole('button', { name: /Sign in as Seeded Owner/i }).click();
+  await expect(page.getByRole('heading', { name: 'Stock Market' })).toBeVisible();
+  await expect(page.getByLabel('Report Date')).toHaveValue(
+    getTodayInTimezone('Asia/Taipei'),
+  );
+  await expect(
+    page.getByRole('button', { name: /On-demand · 1\/1 unread/i }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  await expect(
+    page.getByRole('button', { name: /Slot 07:00 · 4\/4 unread/i }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('heading', { name: /Semiconductor index edges higher/i }),
+  ).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
+  // Mark item as read and save a plain-text note
+  await page.getByRole('checkbox').first().check();
+  await page.getByRole('button', { name: 'Add Note' }).first().click();
+  await page.getByLabel(/Note for Semiconductor/i).fill('<b>Phone viewport note</b>');
+  await page.getByRole('button', { name: 'Save Note' }).click();
+  await expect(page.getByTestId('note-display-60000000-0000-4000-8000-000000000001')).toHaveText(
+    '<b>Phone viewport note</b>',
+  );
+  await expectNoHorizontalOverflow(page);
+
+  // Trigger on-demand brief generation ("Generate now"), poll until succeeded, and load new edition
+  await page.getByRole('button', { name: 'Generate now' }).click();
+  await expect(page.getByRole('button', { name: /On-demand · 6\/6 unread/i })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: /On-demand brief update for Stock Market/i }),
+  ).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
+  // Navigate to Topics & Slots
+  await page.getByRole('link', { name: 'Topics & Slots' }).click();
+  await expect(page.getByRole('heading', { name: /Topics & Delivery Slots/i })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
+  // Navigate to Profile
+  await page.getByRole('link', { name: 'Profile' }).click();
+  await expect(page.getByRole('heading', { name: 'Profile Settings' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+});
