@@ -25,8 +25,8 @@ class StubRunner:
                         "title": f"{topic['title'][:180]} item {n}",
                         "summary": "Fixed stub summary.",
                         "source_name": "Example News",
-                        "source_url": f"https://example.com/{n}",
-                        "published_at": None,
+                        "source_url": f"https://news{n}.example.com/{n}",
+                        "published_at": f"{request['report_date']}T00:00:00Z",
                     }
                     for n in range(1, topic["item_count"] + 1)
                 ]

@@ -112,3 +112,70 @@ async def test_urls_with_host_are_accepted(request_dict, url):
     res = await valid(request_dict)
     res["sections"][0]["items"][0]["source_url"] = url
     validate_result(res, request_dict)
+
+
+def _items(res, n=0):
+    return res["sections"][n]["items"]
+
+
+async def test_three_items_from_one_host_are_blocked(request_dict):
+    res = await valid(request_dict)
+    for i, item in enumerate(_items(res), start=1):
+        item["source_url"] = f"https://aiweekly.co/issues/{i}"
+    with pytest.raises(OutputInvalidError, match="one source host"):
+        validate_result(res, request_dict)
+
+
+async def test_host_match_ignores_case_and_www(request_dict):
+    res = await valid(request_dict)
+    urls = ["https://www.Site.com/a", "https://site.com/b", "https://SITE.COM/c"]
+    for item, url in zip(_items(res), urls, strict=True):
+        item["source_url"] = url
+    with pytest.raises(OutputInvalidError, match="one source host"):
+        validate_result(res, request_dict)
+
+
+async def test_two_items_from_one_host_are_allowed(request_dict):
+    res = await valid(request_dict)
+    urls = ["https://site.com/a", "https://site.com/b", "https://other.com/c"]
+    for item, url in zip(_items(res), urls, strict=True):
+        item["source_url"] = url
+    validate_result(res, request_dict)
+
+
+async def test_host_limit_is_per_section(request_dict):
+    res = await valid(request_dict)
+    for sec in res["sections"]:
+        for item in sec["items"][:2]:
+            item["source_url"] = "https://site.com/" + item["title"].replace(" ", "-")
+    validate_result(res, request_dict)
+
+
+async def test_null_published_at_is_rejected(request_dict):
+    res = await valid(request_dict)
+    _items(res)[0]["published_at"] = None
+    with pytest.raises(OutputInvalidError, match="published_at is required"):
+        validate_result(res, request_dict)
+
+
+async def test_translated_section_title_is_rejected(request_dict):
+    request_dict["topics"][0]["title"] = "Stock market"
+    res = await valid(request_dict)
+    res["sections"][0]["title"] = "股市"
+    with pytest.raises(OutputInvalidError, match="section title"):
+        validate_result(res, request_dict)
+
+
+async def test_section_title_must_match_exactly(request_dict):
+    res = await valid(request_dict)
+    res["sections"][0]["title"] = res["sections"][0]["title"].lower() + " "
+    with pytest.raises(OutputInvalidError, match="section title"):
+        validate_result(res, request_dict)
+
+
+async def test_error_for_host_and_title_has_no_content(request_dict):
+    res = await valid(request_dict)
+    res["sections"][0]["title"] = "SECRET-TITLE"
+    with pytest.raises(OutputInvalidError) as exc:
+        validate_result(res, request_dict)
+    assert "SECRET" not in str(exc.value)

@@ -37,8 +37,13 @@ fresh news.
 - Freshness: only news published within the last 48 hours before the report date, most \
 important first. Never include an older item, even if it is relevant. Read each article's \
 publication date and put it in published_at as an RFC 3339 date-time with offset \
-(for example 2026-11-12T07:30:00+08:00); use null only if the page truly shows no date, and \
-then prefer an item whose date you can confirm.
+(for example 2026-11-12T07:30:00+08:00).
+- published_at is required for every item and must come from the fetched article page (the \
+date shown on the page, or one in the URL such as /202611130200.aspx). WebFetch the article \
+to read it. If you cannot confirm a date, leave that item out; never use null and never guess.
+- Section title must be exactly the topic title from the request, character for character. Do \
+not translate, shorten or rephrase it.
+- Use at most 2 items from the same website in one section.
 - Write each summary in your own words, 1-3 sentences; never copy sentences from sources.
 - source_url must be a link you actually found with the tools, starting with http:// or \
 https://. Never invent or guess URLs.
@@ -53,7 +58,7 @@ to articles but is not an item's source.
 - If there is not enough fresh news for a topic, set status to insufficient_news, explain in \
 note and return fewer items (or none). Never pad.
 - Return at most item_count items per topic, ranks 1..n in order.
-- Write titles, summaries and notes in the language of the locale.
+- Write item titles, summaries and notes in the language of the locale (not section titles).
 - Deliver only the JSON object, with no other text.\
 """
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from collections import Counter
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -80,6 +81,14 @@ def _is_rfc3339(value: str) -> bool:
     return True
 
 
+MAX_ITEMS_PER_HOST = 2  # per section: one site must not supply a whole topic
+
+
+def _host(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower()
+    return host.removeprefix("www.")
+
+
 def _is_uuid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -115,6 +124,7 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
         problems.append("locale differs from the request")
 
     wanted = {t["topic_id"]: t["item_count"] for t in request["topics"]}
+    topic_titles = {t["topic_id"]: t["title"] for t in request["topics"]}
     seen: set[str] = set()
     for section in result["sections"]:
         tid = section["topic_id"]
@@ -124,7 +134,15 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
         if tid in seen:
             problems.append(f"duplicate section for topic {tid}")
         seen.add(tid)
+        wanted_title = topic_titles[tid]
+        if section["title"] != wanted_title:
+            problems.append(f"topic {tid}: section title must equal the request's topic title")
         items = section["items"]
+        per_host = Counter(_host(i["source_url"]) for i in items)
+        if per_host and max(per_host.values()) > MAX_ITEMS_PER_HOST:
+            problems.append(
+                f"topic {tid}: more than {MAX_ITEMS_PER_HOST} items from one source host"
+            )
         if len(items) > wanted[tid]:
             problems.append(f"topic {tid}: {len(items)} items, limit {wanted[tid]}")
         for position, item in enumerate(items, start=1):
@@ -134,7 +152,11 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
             if not _is_http_url(item["source_url"]):
                 problems.append(f"topic {tid}: source_url is not an http(s) URL")
             published = item["published_at"]
-            if published is not None and not _is_rfc3339(published):
+            if published is None:
+                # Stricter than the contract (which allows null): the date must come from the
+                # fetched page so freshness can be judged. Items without a date are dropped.
+                problems.append(f"topic {tid}: published_at is required")
+            elif not _is_rfc3339(published):
                 problems.append(f"topic {tid}: published_at is not an RFC 3339 date-time")
     missing = set(wanted) - seen
     if missing:

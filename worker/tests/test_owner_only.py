@@ -296,3 +296,19 @@ def test_user_prompt_names_the_report_date_and_locale(request_dict):
 
     text = build_user_prompt(request_dict)
     assert request_dict["report_date"] in text and request_dict["locale"] in text
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "published_at is required for every item",
+        "must come from the fetched article page",
+        "WebFetch the article to read it",
+        "leave that item out; never use null and never guess",
+        "Section title must be exactly the topic title from the request, character for character",
+        "Do not translate, shorten or rephrase it",
+        "Use at most 2 items from the same website in one section",
+    ],
+)
+def test_prompt_has_second_round_quality_rules(phrase):
+    assert phrase in _command_prompt()
