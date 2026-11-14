@@ -1,0 +1,2731 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Daily Brief API",
+    "version": "0.1.0",
+    "summary": "Contract shared by the web app, the future iOS app, and the agent worker.",
+    "description": "Single contract for the Daily Brief backend. Client types are generated from this file.\n\nFull URLs are `/api/v1/...` (public), `/api/health`, and `/api/internal/...` (worker only).\n\n**Authentication.** Every `/v1` route requires a user JWT (`userJwt`) issued by the identity\nprovider. Every `/internal` route requires the service token in the `X-Internal-Token` header\n(`internalToken`). Internal routes do not accept a user JWT, and `/v1` routes do not accept the\ninternal token. `/health` is unauthenticated.\n\n**Registration gate.** A profile has `status` of `pending`, `active` or `disabled`. On first\nsign-in the backend creates a profile: `active` if the email is on the allowlist, otherwise\n`pending`. A `pending` account may call only `GET /v1/me` and `POST /v1/auth/redeem-invite`;\nevery other `/v1` route returns 403 with code `account_pending`. A `disabled` account gets\n403 with code `account_disabled` on every `/v1` route, including `GET /v1/me`.\n\n**Errors.** All errors are RFC 9457 `application/problem+json` (`Problem`) with a\nmachine-readable `code`.\n",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Same origin as the frontend; routed to the API."
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness."
+    },
+    {
+      "name": "profile",
+      "description": "The caller's profile."
+    },
+    {
+      "name": "auth",
+      "description": "Registration gate."
+    },
+    {
+      "name": "topics",
+      "description": "Free-text topics."
+    },
+    {
+      "name": "subscriptions",
+      "description": "Topic subscriptions, item counts and order."
+    },
+    {
+      "name": "delivery-slots",
+      "description": "Up to 3 daily delivery times."
+    },
+    {
+      "name": "reports",
+      "description": "Generated reports and items."
+    },
+    {
+      "name": "marks",
+      "description": "Read state and notes on items."
+    },
+    {
+      "name": "jobs",
+      "description": "On-demand brief generation (\"Generate now\") and its status."
+    },
+    {
+      "name": "agent-settings",
+      "description": "Agent settings (reserved in the POC)."
+    },
+    {
+      "name": "internal",
+      "description": "Worker-only endpoints. Reject user JWTs."
+    }
+  ],
+  "security": [
+    {
+      "userJwt": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Liveness check",
+        "description": "Returns only status ok, no data. No authentication.",
+        "tags": [
+          "health"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "operationId": "getMe",
+        "summary": "Read the caller's profile",
+        "description": "Allowed for `pending` accounts. Creates the profile on first sign-in.",
+        "tags": [
+          "profile"
+        ],
+        "responses": {
+          "200": {
+            "description": "The profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateMe",
+        "summary": "Update the caller's profile",
+        "description": "Requires an `active` account.",
+        "tags": [
+          "profile"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/redeem-invite": {
+      "post": {
+        "operationId": "redeemInvite",
+        "summary": "Redeem an invite code",
+        "description": "Moves a `pending` account to `active`. Allowed for `pending` accounts.",
+        "tags": [
+          "auth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "examples": [
+                      "EXAMPLE-CODE"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The now-active profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "description": "Code does not exist. Code `invite_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict. Code is one of `invite_exhausted`, `invite_expired`, `already_active`.\n",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/topics": {
+      "get": {
+        "operationId": "listTopics",
+        "summary": "List the caller's topics",
+        "tags": [
+          "topics"
+        ],
+        "responses": {
+          "200": {
+            "description": "Topics.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "topics"
+                  ],
+                  "properties": {
+                    "topics": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Topic"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTopic",
+        "summary": "Create a topic",
+        "tags": [
+          "topics"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopicCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created topic.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Topic"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/topics/{topic_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/TopicId"
+        }
+      ],
+      "patch": {
+        "operationId": "updateTopic",
+        "summary": "Update a topic",
+        "tags": [
+          "topics"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopicUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated topic.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Topic"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTopic",
+        "summary": "Delete a topic",
+        "description": "Also removes subscriptions to it.",
+        "tags": [
+          "topics"
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "operationId": "listSubscriptions",
+        "summary": "List subscriptions ordered by position",
+        "tags": [
+          "subscriptions"
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscriptions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "subscriptions"
+                  ],
+                  "properties": {
+                    "subscriptions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Subscription"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSubscription",
+        "summary": "Subscribe to an existing topic or a new topic title",
+        "description": "Send either `topic_id` or `title` (creates a private topic). Duplicate returns 409 `already_subscribed`.",
+        "tags": [
+          "subscriptions"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created subscription.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/subscriptions/{subscription_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/SubscriptionId"
+        }
+      ],
+      "patch": {
+        "operationId": "updateSubscription",
+        "summary": "Update item count, order or enabled flag",
+        "tags": [
+          "subscriptions"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated subscription.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSubscription",
+        "summary": "Delete a subscription",
+        "tags": [
+          "subscriptions"
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/delivery-slots": {
+      "get": {
+        "operationId": "getDeliverySlots",
+        "summary": "Get the caller's delivery slots",
+        "tags": [
+          "delivery-slots"
+        ],
+        "responses": {
+          "200": {
+            "description": "Slots and the timezone they are interpreted in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverySlotSet"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceDeliverySlots",
+        "summary": "Replace the full set of delivery slots",
+        "description": "Replaces all slots. More than 3 returns 422 `slot_limit_exceeded`; duplicate\n`local_time` values return 422 (`duplicate_slot`). Positions are assigned by array order.\n",
+        "tags": [
+          "delivery-slots"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliverySlotsReplace"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored slots.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverySlotSet"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/reports": {
+      "get": {
+        "operationId": "listReports",
+        "summary": "List the caller's reports for a date",
+        "tags": [
+          "reports"
+        ],
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Report date. Defaults to today in the caller's timezone.",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report summaries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "reports"
+                  ],
+                  "properties": {
+                    "reports": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ReportSummary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/reports/{report_id}": {
+      "get": {
+        "operationId": "getReport",
+        "summary": "Get one report with sections, items and the caller's marks",
+        "description": "Only the caller's own reports; others return 404.",
+        "tags": [
+          "reports"
+        ],
+        "parameters": [
+          {
+            "name": "report_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Report"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/items/{item_id}/mark": {
+      "put": {
+        "operationId": "setItemMark",
+        "summary": "Set read state and note on an item",
+        "description": "Notes are plain text and must always be rendered as plain text.",
+        "tags": [
+          "marks"
+        ],
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemMarkUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The mark.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemMark"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/agent-settings": {
+      "get": {
+        "operationId": "getAgentSettings",
+        "summary": "Get agent settings (display only in the POC)",
+        "tags": [
+          "agent-settings"
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateAgentSettings",
+        "summary": "Update agent settings (reserved in the POC)",
+        "description": "Defined for forward compatibility. In the POC every field is reserved: the API rejects\nany change with 403 code `agent_settings_locked`.\n",
+        "tags": [
+          "agent-settings"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSettingsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated settings (not reachable in the POC).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Code `agent_settings_locked` (every change in the POC), or an account-state error\n(`account_pending`, `account_disabled`).\n",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/jobs": {
+      "post": {
+        "operationId": "generateNow",
+        "summary": "Queue a brief for the caller now (\"Generate now\")",
+        "description": "Creates one on-demand job for the caller (`slot_id` null, `scheduled_for` = now) with the runner\nfrom the caller's agent settings, commits it, then dispatches the worker. No request body.\n- Counts toward `daily_run_limit`, together with scheduled jobs, in the same day window the\n  scheduler uses (the caller's timezone). Over the limit: 429 `daily_limit_reached`.\n- At most one `queued` or `running` job per user, checked atomically: otherwise 409 `job_in_progress`.\n- The caller needs at least one enabled subscription: otherwise 422 `no_topics`.\n- Runner `claude_subscription` and the caller is not the configured owner: 403 `owner_only`,\n  and no job is created (DESIGN 3.1).\n- A dispatch failure does not fail the request: the job stays `queued` and the next scheduler\n  tick dispatches it again.\n",
+        "tags": [
+          "jobs"
+        ],
+        "responses": {
+          "202": {
+            "description": "Job queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Account gate (`account_pending`, `account_disabled`) or `owner_only`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "description": "`daily_limit_reached` (no `Retry-After`; try again the next day) or `rate_limited`.\n",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait (only for `rate_limited`).",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "operationId": "getJob",
+        "summary": "Status of one of the caller's jobs",
+        "description": "For polling after `generateNow`. Another user's job is 404.",
+        "tags": [
+          "jobs"
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/internal/jobs/claim": {
+      "post": {
+        "operationId": "claimJob",
+        "summary": "Worker claims the next queued job",
+        "description": "Authenticated with `X-Internal-Token` only; a user JWT is rejected with 401.\nMarks the job `running` and increments `attempts`.\n",
+        "tags": [
+          "internal"
+        ],
+        "security": [
+          {
+            "internalToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "worker_id"
+                ],
+                "properties": {
+                  "worker_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A claimed job and its request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "job",
+                    "request"
+                  ],
+                  "properties": {
+                    "job": {
+                      "$ref": "#/components/schemas/Job"
+                    },
+                    "request": {
+                      "$ref": "#/components/schemas/BriefRequest"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No job is queued."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/internal/jobs/{job_id}/result": {
+      "post": {
+        "operationId": "submitJobResult",
+        "summary": "Worker submits the generated report",
+        "description": "Authenticated with `X-Internal-Token` only. In one transaction the API stores the report,\nsections, items and usage and marks the job `succeeded`.\n409 `lease_lost` if the job is not `running` or `attempt` does not match;\n422 if the body fails the BriefResult schema, or 422 `invalid_rank` if item ranks in a section\nare not exactly 1..n in array order. Sections are validated against topics owned by the job's\nuser (not the user's current subscriptions), so settings edited mid-run do not reject output.\n",
+        "tags": [
+          "internal"
+        ],
+        "security": [
+          {
+            "internalToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/Attempt"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BriefResult"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Report stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "report_id"
+                  ],
+                  "properties": {
+                    "report_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/internal/jobs/{job_id}/fail": {
+      "post": {
+        "operationId": "failJob",
+        "summary": "Worker reports a failure",
+        "description": "Authenticated with `X-Internal-Token` only. If `retryable` and attempts remain, the job\nreturns to `queued`; otherwise it becomes `failed`. 409 `lease_lost` if `attempt` does not match.\n",
+        "tags": [
+          "internal"
+        ],
+        "security": [
+          {
+            "internalToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/JobId"
+          },
+          {
+            "$ref": "#/components/parameters/Attempt"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "error",
+                  "retryable"
+                ],
+                "properties": {
+                  "error": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resulting job state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "status",
+                    "attempts"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "failed"
+                      ]
+                    },
+                    "attempts": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "userJwt": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT from the identity provider. Accepted on `/v1` routes only."
+      },
+      "internalToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Internal-Token",
+        "description": "Service token for the worker. Accepted on `/internal` routes only."
+      }
+    },
+    "parameters": {
+      "TopicId": {
+        "name": "topic_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "SubscriptionId": {
+        "name": "subscription_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "Attempt": {
+        "name": "attempt",
+        "in": "query",
+        "required": true,
+        "description": "Lease fencing. The `job.attempts` value returned by `POST /internal/jobs/claim`. The API accepts\nthe call only while the job is `running` with exactly this attempt number; otherwise 409 `lease_lost`\n(the lease expired and the job was re-queued or re-claimed).\n",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "JobId": {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed request (code `bad_request`).",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid or wrong-kind credential (code `unauthorized`).",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but not allowed (code `forbidden`).",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "ForbiddenAccount": {
+        "description": "Account gate. Code `account_pending` (profile is pending and the route is not\n`GET /v1/me` or `POST /v1/auth/redeem-invite`) or `account_disabled`.\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found or not owned by the caller (code `not_found`).",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "State conflict. Examples: `already_subscribed`, `job_in_progress`, `lease_lost`, `topic_exists`.\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "Unprocessable": {
+        "description": "Validation failed (code `validation_error`, or a specific code such as\n`slot_limit_exceeded`, `duplicate_slot`, `visibility_not_supported`).\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Rate limited (code `rate_limited`).",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "description": "RFC 9457 problem details.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri-reference",
+            "examples": [
+              "about:blank"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable error code.",
+            "examples": [
+              "account_pending"
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "message"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Profile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "avatar_url",
+          "bio",
+          "timezone",
+          "locale",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "readOnly": true,
+            "examples": [
+              "owner@example.com"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "bio": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "timezone": {
+            "type": "string",
+            "default": "Asia/Taipei",
+            "description": "IANA time zone name.",
+            "examples": [
+              "Asia/Taipei"
+            ]
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "default": "zh-TW",
+            "examples": [
+              "zh-TW"
+            ],
+            "description": "BCP 47 language tag."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "active",
+              "disabled"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ProfileUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "avatar_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "bio": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA time zone name."
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "examples": [
+              "zh-TW"
+            ],
+            "description": "BCP 47 language tag."
+          }
+        }
+      },
+      "Topic": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "normalized_key",
+          "visibility",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "normalized_key": {
+            "type": "string",
+            "readOnly": true,
+            "description": "Server-generated lookup key."
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TopicCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public"
+            ],
+            "default": "private",
+            "description": "The POC accepts only `private`; `public` returns 422 `visibility_not_supported`."
+          }
+        }
+      },
+      "TopicUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public"
+            ],
+            "description": "The POC accepts only `private`; `public` returns 422 `visibility_not_supported`."
+          }
+        }
+      },
+      "Subscription": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "topic_id",
+          "topic",
+          "item_count",
+          "position",
+          "enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "topic_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "topic": {
+            "$ref": "#/components/schemas/Topic"
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "SubscriptionCreate": {
+        "description": "Either an existing `topic_id` or a new topic `title`.",
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "topic_id"
+            ],
+            "properties": {
+              "topic_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "item_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 3
+              },
+              "position": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "item_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 3
+              },
+              "position": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          }
+        ]
+      },
+      "SubscriptionUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "item_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DeliverySlot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "local_time",
+          "enabled",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "local_time": {
+            "$ref": "#/components/schemas/LocalTime"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          }
+        }
+      },
+      "LocalTime": {
+        "type": "string",
+        "pattern": "^([01][0-9]|2[0-3]):(00|30)$",
+        "description": "Local wall-clock time `HH:MM` in 30-minute steps.",
+        "examples": [
+          "08:00"
+        ]
+      },
+      "DeliverySlotsReplace": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slots"
+        ],
+        "properties": {
+          "slots": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "Full replacement set. `local_time` values must be unique.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "local_time",
+                "enabled"
+              ],
+              "properties": {
+                "local_time": {
+                  "$ref": "#/components/schemas/LocalTime"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      },
+      "DeliverySlotSet": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slots",
+          "timezone"
+        ],
+        "properties": {
+          "slots": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/components/schemas/DeliverySlot"
+            }
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA zone the slots are interpreted in.",
+            "examples": [
+              "Asia/Taipei"
+            ]
+          }
+        }
+      },
+      "ReportSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "report_date",
+          "slot_id",
+          "local_time",
+          "generated_at",
+          "section_count",
+          "item_count",
+          "unread_count"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "report_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "slot_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "local_time": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LocalTime"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "section_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Report": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "report_date",
+          "slot_id",
+          "generated_at",
+          "visibility",
+          "sections"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "report_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "slot_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public"
+            ]
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportSection"
+            }
+          }
+        }
+      },
+      "ReportSection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "topic_id",
+          "title",
+          "position",
+          "status",
+          "note",
+          "items"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "topic_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "insufficient_news"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            }
+          }
+        }
+      },
+      "ReportItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rank",
+          "title",
+          "summary",
+          "source_name",
+          "source_url",
+          "published_at",
+          "mark"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "mark": {
+            "description": "The caller's mark, or null if none.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ItemMark"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ItemMark": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item_id",
+          "read_at",
+          "note",
+          "updated_at"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "read_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "Plain text."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ItemMarkUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "read",
+          "note"
+        ],
+        "properties": {
+          "read": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "Plain text."
+          }
+        }
+      },
+      "AgentSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runner",
+          "model",
+          "daily_run_limit"
+        ],
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "claude_subscription",
+              "anthropic_api"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "default": "sonnet"
+          },
+          "daily_run_limit": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 3
+          }
+        }
+      },
+      "AgentSettingsUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "description": "All fields are reserved in the POC; any change returns 403 `agent_settings_locked`.",
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "claude_subscription",
+              "anthropic_api"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "daily_run_limit": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "user_id",
+          "slot_id",
+          "scheduled_for",
+          "attempts",
+          "runner"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slot_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "runner": {
+            "type": "string",
+            "enum": [
+              "claude_subscription",
+              "anthropic_api"
+            ]
+          }
+        }
+      },
+      "UserJob": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A job as its owner sees it. Never includes worker output, prompts or raw errors.",
+        "required": [
+          "id",
+          "status",
+          "trigger",
+          "created_at",
+          "report_id",
+          "error_code"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "schedule",
+              "manual"
+            ],
+            "description": "`manual` = created by `generateNow` (`slot_id` null)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "report_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Set when `status` is `succeeded`."
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short code when `status` is `failed`, e.g. `worker_failed`, `owner_only`. Never free text.\n"
+          }
+        }
+      },
+      "BriefRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "user_id",
+          "report_date",
+          "timezone",
+          "locale",
+          "topics"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "report_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "timezone": {
+            "type": "string",
+            "examples": [
+              "Asia/Taipei"
+            ]
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "examples": [
+              "zh-TW"
+            ]
+          },
+          "topics": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "topic_id",
+                "title",
+                "item_count"
+              ],
+              "properties": {
+                "topic_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "item_count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                }
+              }
+            }
+          }
+        }
+      },
+      "BriefResult": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "BriefResult",
+        "description": "Output of an AgentRunner for one BriefRequest. The worker validates it before posting to /internal/jobs/{job_id}/result; the API validates it again.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "report_date",
+          "locale",
+          "sections",
+          "usage"
+        ],
+        "properties": {
+          "report_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/BriefResult/$defs/Section"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/BriefResult/$defs/Usage"
+          }
+        },
+        "$defs": {
+          "Section": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "topic_id",
+              "title",
+              "status",
+              "items"
+            ],
+            "properties": {
+              "topic_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "insufficient_news"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "Used when status is insufficient_news or when sources disagree (for example on a number)."
+              },
+              "items": {
+                "type": "array",
+                "maxItems": 10,
+                "description": "Ordered by importance. Each item's rank equals its 1-based position (enforced by prefixItems).",
+                "items": false,
+                "prefixItems": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 2
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 3
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 4
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 6
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 7
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 8
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 9
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/BriefResult/$defs/Item"
+                      },
+                      {
+                        "properties": {
+                          "rank": {
+                            "const": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "ok"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "items": {
+                  "minItems": 1
+                }
+              }
+            },
+            "$comment": "status ok requires at least one item; insufficient_news may have zero items (never pad)."
+          },
+          "Item": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rank",
+              "title",
+              "summary",
+              "source_name",
+              "source_url",
+              "published_at"
+            ],
+            "properties": {
+              "rank": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Equals the item's 1-based position in the section's items array."
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600,
+                "description": "1-3 sentences in the agent's own words."
+              },
+              "source_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "source_url": {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https?://[^\\s/?#@]+([/?#][^\\s]*)?$",
+                "description": "Absolute http(s) URL with a non-empty host, actually found by the agent.",
+                "maxLength": 2048
+              },
+              "published_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            }
+          },
+          "Usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "runner",
+              "model",
+              "duration_ms",
+              "search_count",
+              "input_tokens",
+              "output_tokens"
+            ],
+            "properties": {
+              "runner": {
+                "type": "string",
+                "enum": [
+                  "claude_subscription",
+                  "anthropic_api",
+                  "stub"
+                ]
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "search_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
