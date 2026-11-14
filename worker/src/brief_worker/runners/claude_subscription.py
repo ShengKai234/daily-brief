@@ -50,7 +50,8 @@ class ClaudeSubscriptionRunner:
             "--model",
             self.model,
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",  # required by stream-json; gives the tool_use events we count
             "--json-schema",
             json.dumps(cli_schema()),
             "--tools",
@@ -96,12 +97,11 @@ class ClaudeSubscriptionRunner:
         )
 
     def parse_output(self, raw: str, duration_ms: int) -> BriefResult:
-        """Parse `claude -p --output-format json`. Field names are unverified (VERIFIED 5)."""
-        try:
-            envelope = json.loads(raw)
-        except json.JSONDecodeError:
-            raise OutputInvalidError("claude output is not JSON") from None
-        if not isinstance(envelope, dict) or envelope.get("is_error"):
+        """Parse `claude -p --output-format stream-json --verbose` (JSON lines), or a single
+        `--output-format json` envelope. Field names are unverified against a real run
+        (VERIFIED 5); see HANDOFFS 2026-11-14."""
+        envelope, tool_uses = _split_output(raw)
+        if envelope.get("is_error"):
             raise OutputInvalidError("claude reported an error")
         result = envelope.get("structured_output")
         if result is None:
@@ -116,15 +116,69 @@ class ClaudeSubscriptionRunner:
         model_usage = envelope.get("modelUsage")
         per_model = list(model_usage.values()) if isinstance(model_usage, dict) else []
         per_model = [m for m in per_model if isinstance(m, dict)]
+        searches = (
+            tool_uses.get("WebSearch", 0)
+            if tool_uses is not None
+            else _search_count(usage, per_model)
+        )
+        fetches = tool_uses.get("WebFetch", 0) if tool_uses is not None else 0
+        sections = result.get("sections")
+        if (
+            searches == 0
+            and fetches == 0
+            and isinstance(sections, list)
+            and sections
+            and all(
+                isinstance(x, dict) and x.get("status") == "insufficient_news" for x in sections
+            )
+        ):
+            # The model skipped research and declared everything empty. Invalid, so it is retried.
+            raise OutputInvalidError("all sections insufficient_news and no search was done")
         result["usage"] = {
             "runner": "claude_subscription",
             "model": self.model,
             "duration_ms": duration_ms,
-            "search_count": _search_count(usage, per_model),
+            "search_count": searches,
             "input_tokens": _tokens(usage.get("input_tokens"), per_model, "inputTokens"),
             "output_tokens": _tokens(usage.get("output_tokens"), per_model, "outputTokens"),
         }
         return result
+
+
+def _split_output(raw: str) -> tuple[dict, dict[str, int] | None]:
+    """Return (final result envelope, tool_use counts by tool name or None if not a stream)."""
+    try:
+        single = json.loads(raw)
+    except json.JSONDecodeError:
+        single = None
+    if isinstance(single, dict) and single.get("type") != "assistant":
+        return single, None
+    objs = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            raise OutputInvalidError("claude output is not JSON lines") from None
+        if isinstance(obj, dict):
+            objs.append(obj)
+    envelope = next((o for o in reversed(objs) if o.get("type") == "result"), None)
+    if envelope is None:
+        raise OutputInvalidError("claude output has no result message")
+    counts: dict[str, int] = {}
+    for obj in objs:
+        message = obj.get("message")
+        if obj.get("type") != "assistant" or not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = block.get("name")
+                if isinstance(name, str):
+                    counts[name] = counts.get(name, 0) + 1
+    return envelope, counts
 
 
 def _int(value: object) -> int:

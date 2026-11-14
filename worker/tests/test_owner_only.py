@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from brief_worker.errors import OwnerOnlyError
+from brief_worker.errors import OutputExhaustedError, OutputInvalidError, OwnerOnlyError
 from brief_worker.main import select_runner
 from brief_worker.pipeline import generate_validated
 from brief_worker.runners.claude_subscription import ClaudeSubscriptionRunner
@@ -165,3 +165,107 @@ def test_prompt_has_quality_rules(phrase):
     from brief_worker.prompt import SYSTEM_PROMPT
 
     assert phrase in " ".join(SYSTEM_PROMPT.split())
+
+
+def _stream(tools=(), sections=None, **result_extra):
+    """JSON lines shaped like `claude -p --output-format stream-json --verbose` (unverified)."""
+    lines = [{"type": "system", "subtype": "init"}]
+    for name in tools:
+        lines.append(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "x"},
+                        {"type": "tool_use", "name": name, "input": {}},
+                    ]
+                },
+            }
+        )
+        lines.append({"type": "user", "message": {"content": []}})
+    lines.append(
+        {
+            "type": "result",
+            "is_error": False,
+            "structured_output": {"sections": sections if sections is not None else []},
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+            **result_extra,
+        }
+    )
+    return "\n".join(json.dumps(x) for x in lines)
+
+
+INSUFFICIENT = [{"topic_id": "t", "title": "T", "status": "insufficient_news", "items": []}]
+OK_SECTION = [{"topic_id": "t", "title": "T", "status": "ok", "items": [{}]}]
+
+
+def test_command_uses_stream_json_with_verbose():
+    cmd = ClaudeSubscriptionRunner(OWNER).build_command()
+    assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
+
+
+def test_search_count_counts_websearch_tool_uses():
+    out = ClaudeSubscriptionRunner(OWNER).parse_output(
+        _stream(["WebSearch", "WebFetch", "WebSearch", "WebSearch"], OK_SECTION), 5
+    )
+    assert out["usage"]["search_count"] == 3
+    assert out["usage"]["input_tokens"] == 3 and out["usage"]["output_tokens"] == 4
+
+
+def test_stream_ignores_other_tools_and_garbage_blocks():
+    raw = _stream(["Bash"], OK_SECTION)
+    assert ClaudeSubscriptionRunner(OWNER).parse_output(raw, 1)["usage"]["search_count"] == 0
+
+
+def test_all_insufficient_without_any_search_is_invalid():
+    with pytest.raises(OutputInvalidError):
+        ClaudeSubscriptionRunner(OWNER).parse_output(_stream([], INSUFFICIENT), 1)
+    with pytest.raises(OutputInvalidError):  # single-envelope form too
+        ClaudeSubscriptionRunner(OWNER).parse_output(
+            json.dumps({"is_error": False, "structured_output": {"sections": INSUFFICIENT}}), 1
+        )
+
+
+def test_all_insufficient_after_searching_is_valid():
+    out = ClaudeSubscriptionRunner(OWNER).parse_output(
+        _stream(["WebSearch", "WebSearch"], INSUFFICIENT), 1
+    )
+    assert out["usage"]["search_count"] == 2
+
+
+def test_ok_section_without_search_count_is_not_blocked_by_this_rule():
+    ClaudeSubscriptionRunner(OWNER).parse_output(_stream([], OK_SECTION), 1)
+
+
+def test_stream_without_result_message_is_invalid():
+    with pytest.raises(OutputInvalidError):
+        ClaudeSubscriptionRunner(OWNER).parse_output('{"type":"assistant","message":{}}', 1)
+    with pytest.raises(OutputInvalidError):
+        ClaudeSubscriptionRunner(OWNER).parse_output("not json\nat all", 1)
+
+
+async def test_skipped_search_triggers_the_one_retry(request_dict, monkeypatch):
+    spawned = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, data=None):
+            return _stream([], INSUFFICIENT).encode(), b""
+
+    async def fake_exec(*a, **k):
+        spawned.append(a)
+        return FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    with pytest.raises(OutputExhaustedError):
+        await generate_validated(ClaudeSubscriptionRunner(OWNER), request_dict)
+    assert len(spawned) == 2
+
+
+def test_prompt_requires_search_per_topic():
+    from brief_worker.prompt import SYSTEM_PROMPT
+
+    text = " ".join(SYSTEM_PROMPT.split())
+    assert "at least one web search for every topic" in text
+    assert "never mark a topic insufficient_news without having searched" in text
