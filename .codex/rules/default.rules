@@ -1,0 +1,69 @@
+# Project Codex rules (loaded only when this repo is trusted). Approved by Kai, DECISIONS 2026-11-13.
+# "allow" runs the command outside the sandbox without prompting; "forbidden" blocks it.
+# Most restrictive match wins (forbidden > prompt > allow).
+
+prefix_rule(
+    pattern = ["docker"],
+    decision = "allow",
+    justification = "Local Docker/OrbStack stack (docker, docker compose) runs without approval",
+    match = ["docker compose up -d --wait", "docker ps", "docker run --rm postgres:16"],
+)
+
+prefix_rule(
+    pattern = ["cd"],
+    decision = "allow",
+    justification = "Changing directory is harmless; chained commands are checked separately",
+    match = ["cd ../daily-brief-memory"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease", "--delete", "-d"]],
+    decision = "forbidden",
+    justification = "AGENTS.md hard rules: never force-push or delete remote branches",
+    match = ["git push --force origin agent/db", "git push -f"],
+    not_match = ["git push -u origin agent/db"],
+)
+
+prefix_rule(
+    pattern = ["terraform", ["apply", "destroy"]],
+    decision = "forbidden",
+    justification = "AGENTS.md hard rules: Kai changes cloud resources",
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", ["main", "HEAD:main", "memory"]],
+    decision = "forbidden",
+    justification = "AGENTS.md hard rules: only push your own agent/* branch",
+)
+
+prefix_rule(
+    pattern = ["git", ["status", "diff", "log", "show", "add", "commit", "fetch", "merge", "push", "rev-parse", "ls-files", "switch"]],
+    decision = "allow",
+    justification = "Everyday git on your own branch. Local prefix rules cannot stop every push variant; GitHub rulesets on main/agent/* are the enforcement layer.",
+    match = ["git commit -m x", "git push -u origin agent/api", "git fetch origin"],
+    not_match = ["git -C /tmp reset --hard", "git rebase main"],
+)
+
+prefix_rule(
+    pattern = ["git", ["reset", "clean", "filter-branch", "filter-repo", "rebase"]],
+    decision = "forbidden",
+    justification = "AGENTS.md hard rules: no destructive or history-rewriting git commands",
+)
+
+prefix_rule(
+    pattern = ["git", "branch", ["-D", "--delete", "-d"]],
+    decision = "forbidden",
+    justification = "AGENTS.md: do not delete branches",
+)
+
+prefix_rule(
+    pattern = ["git", "worktree", ["remove", "prune"]],
+    decision = "forbidden",
+    justification = "AGENTS.md: worktrees are managed by lead",
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["create", "view", "list", "diff", "checks"]],
+    decision = "allow",
+    justification = "Open and inspect your own PR",
+)
