@@ -3,6 +3,7 @@ import {
   DEV_OWNER_USER_ID,
   decodeJwtClaims,
 } from '../auth/jwt';
+import { getTodayInTimezone } from '../utils/date';
 import type {
   AgentSettings,
   DeliverySlot,
@@ -25,8 +26,6 @@ import type {
   TopicUpdate,
   UserJob,
 } from './types';
-
-export const DEFAULT_REPORT_DATE = '2026-11-12';
 
 export interface MockJobBehavior {
   pollsBeforeTerminal?: number;
@@ -185,9 +184,43 @@ function createInitialOwnerStore(): UserStore {
     },
   ];
 
+  const ownerTimezone = 'Asia/Taipei';
+  const todayDate = getTodayInTimezone(ownerTimezone);
+
+  const olderReport: Report = {
+    id: '40000000-0000-4000-8000-000000000000',
+    report_date: todayDate,
+    slot_id: null,
+    generated_at: '2026-11-12T05:00:00Z',
+    visibility: 'private',
+    sections: [
+      {
+        id: '50000000-0000-4000-8000-000000000000',
+        topic_id: topics[0].id,
+        title: topics[0].title,
+        position: 0,
+        status: 'ok',
+        note: null,
+        items: [
+          {
+            id: '60000000-0000-4000-8000-000000000000',
+            rank: 1,
+            title: 'Earlier pre-market digest before scheduled slot',
+            summary:
+              'Overnight futures stayed flat ahead of the regular morning session.',
+            source_name: 'Pre-Market Wire',
+            source_url: 'https://example.com/news/pre-market-digest',
+            published_at: '2026-11-12T04:00:00Z',
+            mark: null,
+          },
+        ],
+      },
+    ],
+  };
+
   const report: Report = {
     id: '40000000-0000-4000-8000-000000000001',
-    report_date: DEFAULT_REPORT_DATE,
+    report_date: todayDate,
     slot_id: slots[0].id,
     generated_at: '2026-11-12T07:02:00Z',
     visibility: 'private',
@@ -201,7 +234,7 @@ function createInitialOwnerStore(): UserStore {
       display_name: 'Owner',
       avatar_url: null,
       bio: 'Daily Brief owner account',
-      timezone: 'Asia/Taipei',
+      timezone: ownerTimezone,
       locale: 'zh-TW',
       status: 'active',
       created_at: createdAt,
@@ -215,7 +248,7 @@ function createInitialOwnerStore(): UserStore {
       model: 'sonnet',
       daily_run_limit: 3,
     },
-    reports: [report],
+    reports: [olderReport, report],
     marks: {},
     jobs: [
       {
@@ -814,8 +847,11 @@ export async function mockFetch(
 
   // GET /api/v1/reports?date=...
   if (pathname === '/api/v1/reports' && method === 'GET') {
-    const requestedDate = url.searchParams.get('date') || DEFAULT_REPORT_DATE;
-    const matching = store.reports.filter((r) => r.report_date === requestedDate);
+    const requestedDate =
+      url.searchParams.get('date') || getTodayInTimezone(store.profile.timezone);
+    const matching = store.reports
+      .filter((r) => r.report_date === requestedDate)
+      .sort((a, b) => a.generated_at.localeCompare(b.generated_at));
     const summaries = matching.map((r) => buildReportSummary(r, store.slots, store.marks));
     return jsonResponse(200, { reports: summaries });
   }
@@ -998,15 +1034,23 @@ export async function mockFetch(
         ],
       }));
 
+      const latestMs = store.reports.reduce(
+        (max, r) => Math.max(max, Date.parse(r.generated_at) || 0),
+        Date.parse('2026-11-12T10:44:00Z'),
+      );
+      const nextGeneratedAt = new Date(latestMs + 60_000)
+        .toISOString()
+        .replace('.000Z', 'Z');
+
       const newReport: Report = {
         id: newReportId,
-        report_date: DEFAULT_REPORT_DATE,
+        report_date: getTodayInTimezone(store.profile.timezone),
         slot_id: null,
-        generated_at: '2026-11-12T10:45:00Z',
+        generated_at: nextGeneratedAt,
         visibility: 'private',
         sections: newSections,
       };
-      store.reports.unshift(newReport);
+      store.reports.push(newReport);
 
       const succeededJob: UserJob = {
         ...job,

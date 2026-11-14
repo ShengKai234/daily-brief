@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { getTodayInTimezone } from '../src/utils/date';
 
 async function expectNoHorizontalOverflow(page: import('@playwright/test').Page) {
   const overflow = await page.evaluate(() => {
@@ -17,6 +18,18 @@ test('usable at phone width (375x667) across sign-in, report, notes, settings, a
 
   await page.getByRole('button', { name: /Sign in as Seeded Owner/i }).click();
   await expect(page.getByRole('heading', { name: 'Stock Market' })).toBeVisible();
+  await expect(page.getByLabel('Report Date')).toHaveValue(
+    getTodayInTimezone('Asia/Taipei'),
+  );
+  await expect(
+    page.getByRole('button', { name: /On-demand · 1\/1 unread/i }),
+  ).toHaveAttribute('aria-pressed', 'false');
+  await expect(
+    page.getByRole('button', { name: /Slot 07:00 · 4\/4 unread/i }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('heading', { name: /Semiconductor index edges higher/i }),
+  ).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   // Mark item as read and save a plain-text note

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, apiClient } from '../api/client';
-import { DEFAULT_REPORT_DATE } from '../api/mockApi';
 import type { Report, ReportItem, ReportSummary, UserJob } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { getNewestReport, getTodayInTimezone } from '../utils/date';
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const MAX_POLL_DURATION_MS = 15 * 60 * 1000;
@@ -146,7 +146,10 @@ function ReportItemCard({ item, saving, onSaveMark }: ItemNoteEditorProps) {
 
 export function ReportsPage() {
   const { token, profile } = useAuth();
-  const [selectedDate, setSelectedDate] = useState<string>(DEFAULT_REPORT_DATE);
+  const [selectedDate, setSelectedDate] = useState<string>(() =>
+    getTodayInTimezone(profile?.timezone || 'Asia/Taipei'),
+  );
+  const [userChangedDate, setUserChangedDate] = useState<boolean>(false);
   const [summaries, setSummaries] = useState<ReportSummary[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -166,6 +169,12 @@ export function ReportsPage() {
   const isJobActive =
     submittingJob || activeJob?.status === 'queued' || activeJob?.status === 'running';
 
+  useEffect(() => {
+    if (!userChangedDate && profile?.timezone) {
+      setSelectedDate(getTodayInTimezone(profile.timezone));
+    }
+  }, [profile?.timezone, userChangedDate]);
+
   const loadReportsForDate = useCallback(
     async (dateStr: string, preferredReportId?: string) => {
       if (!token) {
@@ -180,11 +189,14 @@ export function ReportsPage() {
         if (targetId && res.reports.some((r) => r.id === targetId)) {
           preferredReportIdRef.current = null;
           setSelectedReportId(targetId);
-        } else if (res.reports.length > 0) {
-          setSelectedReportId(res.reports[0].id);
         } else {
-          setSelectedReportId(null);
-          setReport(null);
+          const newest = getNewestReport(res.reports);
+          if (newest) {
+            setSelectedReportId(newest.id);
+          } else {
+            setSelectedReportId(null);
+            setReport(null);
+          }
         }
       } catch (err) {
         if (err instanceof ApiError) {
@@ -413,7 +425,10 @@ export function ReportsPage() {
             type="date"
             className="input"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => {
+              setUserChangedDate(true);
+              setSelectedDate(e.target.value);
+            }}
           />
           <button
             type="button"

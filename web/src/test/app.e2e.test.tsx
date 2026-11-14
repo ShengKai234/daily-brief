@@ -15,6 +15,7 @@ import {
   DEV_PENDING_USER_ID,
   issueDevJwt,
 } from '../auth/jwt';
+import { getNewestReport, getTodayInTimezone } from '../utils/date';
 
 function renderApp(initialEntries: string[] = ['/']) {
   return render(
@@ -95,7 +96,23 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
       const source = fs.readFileSync(path.join(webRoot, relPath), 'utf-8');
       expect(source).not.toContain('dangerouslySetInnerHTML');
       expect(source).not.toMatch(/\bstyle=\{\{/);
+      expect(source).not.toContain('mockApi');
     }
+  });
+
+  it('computes today in profile timezone (e.g. 2026-11-14T23:30Z is 2026-11-15 in Asia/Taipei) and selects newest report by generated_at', () => {
+    const instant = new Date('2026-11-14T23:30:00Z');
+    expect(getTodayInTimezone('Asia/Taipei', instant)).toBe('2026-11-15');
+    expect(getTodayInTimezone('UTC', instant)).toBe('2026-11-14');
+    expect(getTodayInTimezone('America/Los_Angeles', instant)).toBe('2026-11-14');
+
+    const ascendingReports = [
+      { id: 'oldest', generated_at: '2026-11-14T05:00:00Z' },
+      { id: 'middle', generated_at: '2026-11-14T07:02:00Z' },
+      { id: 'newest', generated_at: '2026-11-14T10:45:00Z' },
+    ];
+    expect(getNewestReport(ascendingReports)?.id).toBe('newest');
+    expect(getNewestReport([])).toBeNull();
   });
 
   it('includes PWA manifest and service worker that never caches /api/*', () => {
@@ -275,14 +292,33 @@ describe('End-to-end user flows against the mock API', () => {
       ).toBeInTheDocument();
     });
 
+    // Opens on today in Asia/Taipei (not a fixed 2026-11-12 date)
+    const expectedToday = getTodayInTimezone('Asia/Taipei');
+    expect(screen.getByLabelText(/Report Date/i)).toHaveValue(expectedToday);
+
+    // Selects the newest report (Slot 07:00, max generated_at) instead of reports[0] (older On-demand 1/1)
+    const olderEditionBtn = screen.getByRole('button', {
+      name: /On-demand · 1\/1 unread/i,
+    });
+    const newestEditionBtn = screen.getByRole('button', {
+      name: /Slot 07:00 · 4\/4 unread/i,
+    });
+    expect(olderEditionBtn).toHaveAttribute('aria-pressed', 'false');
+    expect(newestEditionBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      screen.getByRole('heading', {
+        name: /Semiconductor index edges higher/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        name: /Earlier pre-market digest before scheduled slot/i,
+      }),
+    ).not.toBeInTheDocument();
+
     // Displays insufficient_news section note
     expect(
       screen.getByText(/No new official Ruby or Python point releases/i),
-    ).toBeInTheDocument();
-
-    // Unread summary starts at 4/4 unread
-    expect(
-      screen.getByRole('button', { name: /Slot 07:00 · 4\/4 unread/i }),
     ).toBeInTheDocument();
 
     // Mark first item as read
