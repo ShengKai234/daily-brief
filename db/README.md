@@ -56,22 +56,14 @@ variables; do not put a URL in `alembic.ini` or command history.
 
 ## Seed behavior
 
-`OWNER_EMAIL` and an explicit `APP_ENV=local|production` are required. Emails are
-trimmed and lowercased. The seed is transactional and repeatable.
-
-- Every environment inserts the configured email into `allowed_emails`.
-- Production creates no profile or synthetic auth subject. The API creates the
-  profile from the verified sign-in subject and activates it through the allowlist.
-- Local development creates active owner
-  `00000000-0000-4000-8000-000000000001`, default agent settings, six topics and
-  subscriptions (stock market, AI, information security, weather, Ruby/Python
-  releases, travel), and one 07:00 slot using `Asia/Taipei`.
-- Existing subscription preferences and slot times are preserved on reseeding.
-  Changing the local owner email after initial seeding fails atomically.
-
-The API dev verifier and local worker's `OWNER_USER_ID` must use this fixed UUID.
-No production owner UUID is inferred from an email. Enforcing the subscription
-runner's owner restriction remains an API/worker responsibility (DESIGN 3.1).
+`APP_ENV` must be explicitly `local` or `production`. The seed is transactional and
+repeatable. Production seeds nothing (the owner is created with
+`auth_admin bootstrap-owner`). Local development creates active owner
+`00000000-0000-4000-8000-000000000001` (no email, no passkey: AUTH-16 lets the local
+scheduler serve it), default agent settings, six topics and subscriptions (stock market,
+AI, information security, weather, Ruby/Python releases, travel), and one 07:00 slot
+using `Asia/Taipei`. Existing subscription preferences and slot times are preserved on
+reseeding. `OWNER_USER_ID` must use this fixed UUID locally.
 
 ## Constraints and client access
 
@@ -89,12 +81,14 @@ provide `slot_id`. Deleting slots sets historical job/report references to NULL;
 NULL slot IDs remain distinct so deleting multiple slots with jobs scheduled at
 the same instant succeeds. This is not an idempotency key for slotless jobs.
 
-Every application table and `alembic_version` has RLS enabled with a restrictive
-deny-all policy. PUBLIC table privileges are revoked, as are grants to `anon`
-and `authenticated` when those roles exist, including TRUNCATE (which RLS does
-not control). The API connects through a trusted table-owner or BYPASSRLS role
-and must authorize every request. A Supabase service-role HTTP key is not a SQL
-login. No JWT setting or Supabase-specific function is used in policies.
+Every application table has RLS enabled and **no policy for client roles** (`PUBLIC`,
+`anon`, `authenticated`): default deny. Only `brief_runtime` and `brief_admin` have
+policies and grants (revision `0006_passkey_auth`, `docs/auth-passkey-design.md` 4.4);
+neither owns tables nor has `BYPASSRLS`. `alembic_version` keeps its restrictive deny
+policy (the owner `brief_migrator` bypasses it as table owner). PUBLIC table privileges
+are revoked, as are grants to `anon` and `authenticated`, including TRUNCATE (which RLS
+does not control). A Supabase service-role HTTP key is not a SQL login. No JWT setting or
+Supabase-specific function is used in policies.
 
 Revision `0003_default_privileges` also revokes default table grants from PUBLIC
 and, when present, `anon` and `authenticated`. It removes both database-wide and
@@ -104,8 +98,8 @@ role, so future migrations must use the same role. Another table-creating role
 needs equivalent defaults configured separately. Defaults for unrelated roles
 are unchanged. See [Postgres default privileges](https://www.postgresql.org/docs/16/sql-alterdefaultprivileges.html).
 
-Every new application table still needs RLS enabled, a restrictive deny policy,
-and explicit client privilege revocation in its migration. Default privilege
+Every new application table still needs RLS enabled, explicit client privilege
+revocation and role grants/policies for the two backend roles in its migration. Default privilege
 revocation is an extra safeguard; it does not enable RLS or prevent a later
 explicit grant from reopening access.
 

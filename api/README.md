@@ -22,62 +22,79 @@ docs, tests, scripts, `.env`, or agent configuration are copied into the image.
 
 ## Local stack
 
-Use the root `.env` with project `brief-api` and ports 5632/8200/5373, per
-AGENTS.md. Required configuration:
+Use the root `.env` with this worktree's project name and ports (AGENTS.md). Required
+configuration (`.env.example` lists every key):
 
-- `APP_ENV=local`, `AUTH_VERIFIER=dev`, `DEV_JWT_SECRET` (local signing key).
-- `DATABASE_URL` (the compose `db` host when running in Docker). The existing
-  `postgresql+asyncpg://` URL is accepted for compatibility, but the API uses
-  Psycopg async. Standard `postgresql://` is also accepted.
-- `OWNER_USER_ID=00000000-0000-4000-8000-000000000001` for the DB local seed;
-  `OWNER_EMAIL` comes from `.env`. A missing owner ID rejects subscription jobs.
+- `APP_ENV=local` (required: `local` or `production`, no default; the API and the CLI
+  refuse to start otherwise).
+- `DATABASE_URL` is the `brief_runtime` role (API, scheduler, local `dev-session`).
+  `MIGRATION_DATABASE_URL` (`brief_migrator`, used by `migrate` only) and
+  `ADMIN_DATABASE_URL` (`brief_admin`, the CLI) complete the three roles; locally
+  `docker compose run --rm migrate` creates them from those URLs (see `db/README.md`).
+- Passkeys: `WEBAUTHN_RP_ID` (`localhost` locally), `WEBAUTHN_ORIGINS` (this worktree's
+  `http://localhost:<WEB_PORT>`), `WEBAUTHN_RP_NAME`, `NON_OWNER_ADMISSION=false`,
+  `RATE_LIMIT_KEY`, `COMPOSE_PROJECT_NAME` (local cookie names include it).
+- `OWNER_USER_ID=00000000-0000-4000-8000-000000000001` for the local seed.
 - `INTERNAL_SERVICE_TOKEN`, shared only with the trusted worker.
-- `WORKER_DISPATCHER=local`, `AGENT_RUNNER=stub` for the deterministic local
-  adapter. This adapter claims jobs through the same queue service and persists
-  complete reports without invoking a model.
+- `WORKER_DISPATCHER=local`, `AGENT_RUNNER=stub` for the deterministic local adapter.
 
-From the root: `make migrate`, `make seed`, then `make up`. Scheduler and API
-must start after migration; the local scheduler retries failures each interval.
-To run immediately: `docker compose run --rm scheduler python -m app.scheduler`.
-For a dev bearer token: `docker compose exec api python -m app.dev_token`.
-This helper prints an ephemeral token; do not save or commit it. It issues only
-the configured local owner's identity and has no HTTP endpoint. The frontend
-must arrange its local sign-in adapter separately.
+From the root: `make up` (migrates, then starts), `make seed`. To run the scheduler
+immediately: `docker compose run --rm scheduler python -m app.scheduler`.
 
-For a real local worker, choose its runner via `AGENT_RUNNER` and run `make worker`
-on the host. With no `LOCAL_WORKER_COMMAND`, local dispatch logs a no-op while
-the host worker polls for jobs. Alternatively, set `LOCAL_WORKER_COMMAND` to an
-installed worker executable and its arguments; it runs without a shell. The
-worker uses `API_BASE_URL` and `INTERNAL_SERVICE_TOKEN` from its environment.
-The worker checkout/CLI must be available in that runtime; the API image bundles
-only the deterministic stub.
+### Admin CLI (`app/auth_admin.py`)
+
+```sh
+docker compose run --rm api python -m app.auth_admin bootstrap-owner   # prints the one-hour enrollment link
+docker compose run --rm api python -m app.auth_admin dev-session       # local only: prints name=value for curl
+# issue-invite | issue-recovery --user <uuid> | issue-add-credential --user <uuid>
+# list-tokens | revoke-token <id> | disable-user <uuid> | enable-user <uuid> | revoke-sessions --user <uuid>
+```
+
+Every mutating command prints the environment and the database host (never the password)
+and asks for `yes` (`--yes` skips this only when `APP_ENV=local`). Links are printed
+once and never stored; the database keeps only SHA-256 hashes. Do not capture CLI output
+in CI or logs. `issue-invite` and non-owner recovery are refused while
+`NON_OWNER_ADMISSION` is not `true` (DESIGN 3.1).
 
 ## Authentication and production configuration
 
-Production requires `APP_ENV=production`, `AUTH_VERIFIER=supabase`,
-`SUPABASE_URL`, optional `SUPABASE_JWKS_URL`, `DATABASE_URL`,
-`INTERNAL_SERVICE_TOKEN`, `OWNER_USER_ID`, `AGENT_RUNNER=claude_subscription`,
-`WORKER_DISPATCHER=github`, `GITHUB_REPOSITORY`, and `GITHUB_DISPATCH_TOKEN`.
-The dev verifier refuses startup outside local mode. JWT verification pins
-issuer, authenticated audience/role, expiry and asymmetric RS256/ES256 keys.
-Legacy shared-secret Supabase signing is intentionally unsupported: configure
-asymmetric signing keys before M2. User JWTs and internal credentials are
-accepted only by their respective route families.
+Auth is self-hosted passkeys (`docs/auth-passkey-design.md` v0.3; invariants AUTH-1..16):
+
+- `app/guard.py` (pure ASGI) applies the `/v1` request rules in order: route family,
+  body size, exactly one trusted `Origin` on unsafe methods, media type; every `/api`
+  response gets `Cache-Control: no-store`. `/internal` accepts only the service token
+  (no Origin check, a session cookie is refused).
+- `app/auth.py` `SessionAuthenticator` checks, per request, the hashed session token,
+  expiry, profile status and (for passkey sessions) the credential in the database.
+- `app/passkeys.py` implements the ceremonies and passkey/session routes with one lock
+  order (profile, token, sessions, credentials, ceremony). A failed proof consumes only
+  its own ceremony; a crash rolls everything back and leaves it usable.
+- `app/webauthn_wrapper.py` is the only module that uses `py_webauthn` (pinned to an exact
+  release in `pyproject.toml`; behaviour in `VERIFIED.md`). It always passes
+  `current_sign_count=0` and applies design 5.7 afterwards.
+- Rate limits (20 requests / 10 min per client IP on the public auth endpoints, 10 option
+  calls per token) are committed outside the request transaction.
+
+Production requires `APP_ENV=production`, `DATABASE_URL` (TLS required), `INTERNAL_SERVICE_TOKEN`,
+`WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS` (exact `https://` origins of the RP ID),
+`RATE_LIMIT_KEY` (at least 32 characters), `OWNER_USER_ID`, `AGENT_RUNNER=claude_subscription`,
+`WORKER_DISPATCHER=github`, `GITHUB_REPOSITORY`, `GITHUB_DISPATCH_TOKEN`. In production the
+client address comes only from `CloudFront-Viewer-Address`; a missing or malformed header
+is refused and `X-Forwarded-For` is never read. Lambda must not be reachable except
+through CloudFront (infra, M2).
 
 Use the actual Supavisor transaction URL (port 6543) from Connect; do not infer
 the hostname from the region. Psycopg uses `prepare_threshold=None`, closes
 connections after each transaction, and requires TLS outside local mode.
-Migrations retain the DB agent's separate direct/session connection setup.
 
 GitHub dispatch targets `agent-worker.yml` on `main`, without inputs, using API
 version `2026-03-10`. Scope a fine-grained token to this repository with Actions
 write permission. No workflow dispatch, cloud access or deployment is performed
-by the test suite. Infrastructure must provide CloudFront origin protection,
-concurrency limits and the Lambda runtime packaging before cloud use.
+by the test suite.
 
 ## Queue behavior and limits
 
-`POST /api/v1/jobs` requires an active user JWT and no request body. It accepts
+`POST /api/v1/jobs` requires a signed-in session and no request body. It accepts
 a manual job with `202`, sharing the scheduler's local-day quota and profile-row
 lock. It rejects an existing queued/running job with `409 job_in_progress`, no
 enabled subscriptions with `422 no_topics`, and an exhausted quota with

@@ -21,8 +21,6 @@ from conftest import OWNER
 from fakeauth import FakeAuthenticator, b64
 
 from app import auth_admin, clock
-from app.auth import ABSOLUTE
-from app.authdb import insert_credential
 from app.security import token_hash
 
 # ---------- F01 ----------
@@ -429,6 +427,3 @@ async def test_registration_rejects_untrusted_origin_and_rp_and_missing_verifica
         assert (verify.status_code, verify.json()["code"]) == (400, "registration_failed"), kw
     assert await rows(env, "SELECT 1 FROM passkey_credentials") == []
     assert (await one(env, "SELECT used_at FROM enrollment_tokens"))["used_at"] is None
-
-
-__all__ = ["insert_credential", "ABSOLUTE"]

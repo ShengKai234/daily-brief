@@ -9,9 +9,7 @@ from authkit import (
     execute,
     login_options,
     one,
-    options_body,
     owner_with_passkey,
-    register,
     rows,
     sign_in,
 )
@@ -470,13 +468,12 @@ async def test_another_users_ids_are_not_found(env):
 
 @pytest.mark.integration
 async def test_re_enabling_does_not_revive_anything(env):
-    from authkit import Cli, issue_recovery
+    from authkit import Cli
 
     browser, _ = await owner_with_passkey(env)
     other = uuid4()
     await execute(env, "INSERT INTO profiles (user_id) VALUES (%s)", (other,))
     user = await env["as_user"](other)
-    env["settings"] = env["settings"]
     cli = Cli(env)
     from dataclasses import replace
 
@@ -493,7 +490,6 @@ async def test_re_enabling_does_not_revive_anything(env):
         "status"
     ] == "active"
     assert (await browser.get("/v1/me")).status_code == 200
-    del issue_recovery
 
 
 @pytest.mark.unit
@@ -522,6 +518,3 @@ async def test_duplicate_session_cookies_are_rejected(env):
         "/v1/me", headers={"Cookie": f"{name}={value}; {name}={value}"}, contract=False
     )
     assert response.status_code == 401
-
-
-__all__ = ["options_body", "register"]

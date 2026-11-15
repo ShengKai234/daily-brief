@@ -10,7 +10,6 @@ dependencies = [
     "jsonschema[format]>=4.23",
     "mangum>=0.19",
     "psycopg[binary]>=3.2",
-    "pyjwt[crypto]>=2.10",
     "uvicorn[standard]>=0.30",
     "webauthn==3.0.1",
 ]
@@ -25,6 +24,7 @@ dev = [
     "alembic>=1.13",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
+    "cbor2>=6.3.0",
 ]
 
 [tool.ruff]

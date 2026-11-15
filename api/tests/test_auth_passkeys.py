@@ -13,7 +13,6 @@ from authkit import (
     invited_user,
     issue_add,
     issue_recovery,
-    login_options,
     one,
     options_body,
     owner_with_passkey,
@@ -501,7 +500,7 @@ async def test_revoke_sessions_command(env):
 
 
 @pytest.mark.integration
-async def test_issue_commands_validate_and_list_tokens_hides_secrets(env, capsys):
+async def test_issue_commands_validate_and_list_tokens_hides_secrets(env):
     from app import auth_admin
 
     with pytest.raises(auth_admin.CliError):
@@ -517,7 +516,3 @@ async def test_issue_commands_validate_and_list_tokens_hides_secrets(env, capsys
         "/v1/auth/registration/options", json=options_body(token)
     )
     assert response.json()["code"] == "enrollment_token_invalid"
-    del capsys
-
-
-__all__ = ["login_options"]

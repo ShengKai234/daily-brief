@@ -5,7 +5,7 @@ import io
 from dataclasses import replace
 from uuid import UUID
 
-from fakeauth import FakeAuthenticator, b64
+from fakeauth import FakeAuthenticator
 
 from app import auth_admin
 
@@ -120,9 +120,6 @@ async def rows(env, query, params=()):
 async def execute(env, query, params=()):
     async with env["super"].transaction() as db:
         await db.execute(query, params)
-
-
-__all__ = ["b64"]
 
 
 def set_gate(env, value):
