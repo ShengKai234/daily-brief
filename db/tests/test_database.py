@@ -71,9 +71,7 @@ async def test_slot_limit_per_user_includes_disabled_slots(connection, owner):
     with pytest.raises(asyncpg.UniqueViolationError):
         await add_slot(connection, owner, 1, time(10))
     other = uuid4()
-    await connection.execute(
-        "INSERT INTO profiles (user_id, email) VALUES ($1, 'reader@example.com')", other
-    )
+    await connection.execute("INSERT INTO profiles (user_id) VALUES ($1)", other)
     await add_slot(connection, other, 1, time(7))
 
 
@@ -208,21 +206,16 @@ async def test_future_tables_do_not_inherit_client_grants(connection, scope):
     assert await connection.fetchval("SELECT count(*) FROM future_table") == 1
 
 
-async def test_restrictive_rls_blocks_reads_and_writes_even_with_grants(connection, owner):
+async def test_rls_default_deny_blocks_reads_and_writes_even_with_grants(connection, owner):
+    # No policy exists for client-style roles (design 4.4): a grant alone shows and changes nothing.
     await connection.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON profiles TO rls_probe")
-    # A future permissive policy must not accidentally reopen direct access.
-    await connection.execute(
-        "CREATE POLICY accidental_allow ON profiles TO rls_probe USING (true) WITH CHECK (true)"
-    )
     await connection.execute("SET ROLE rls_probe")
     try:
         assert await connection.fetch("SELECT * FROM profiles") == []
         assert await connection.execute("UPDATE profiles SET bio = 'changed'") == "UPDATE 0"
         assert await connection.execute("DELETE FROM profiles") == "DELETE 0"
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
-            await connection.execute(
-                "INSERT INTO profiles (user_id, email) VALUES ($1, 'reader@example.com')", uuid4()
-            )
+            await connection.execute("INSERT INTO profiles (user_id) VALUES ($1)", uuid4())
     finally:
         await connection.execute("RESET ROLE")
     assert await connection.fetchval("SELECT count(*) FROM profiles") == 1
@@ -241,7 +234,7 @@ async def test_updated_at_trigger(connection, owner):
 async def test_profile_locale_length_on_insert_and_update(connection, owner, locale, valid):
     statements = (
         (
-            "INSERT INTO profiles (user_id, email, locale) VALUES ($1, 'reader@example.com', $2)",
+            "INSERT INTO profiles (user_id, locale) VALUES ($1, $2)",
             uuid4(),
         ),
         ("UPDATE profiles SET locale = $2 WHERE user_id = $1", owner),
@@ -365,53 +358,37 @@ async def test_source_url_migration_validates_existing_rows_and_downgrades(conne
 
 
 async def test_seed_local_is_repeatable_and_preserves_settings(connection, monkeypatch):
-    monkeypatch.setenv("OWNER_EMAIL", "Owner@Example.com")
     monkeypatch.setenv("APP_ENV", "local")
     await seed()
     await connection.execute("UPDATE subscriptions SET item_count = 5")
     await connection.execute("UPDATE delivery_slots SET local_time = '08:30'")
     await seed()
     assert await connection.fetchval("SELECT user_id FROM profiles") == LOCAL_OWNER_ID
-    assert await connection.fetchval("SELECT email FROM allowed_emails") == "owner@example.com"
+    assert await connection.fetchval("SELECT runner FROM agent_settings") == "claude_subscription"
     assert await connection.fetchval("SELECT count(*) FROM topics") == len(DEFAULT_TOPICS)
     assert await connection.fetchval("SELECT count(*) FROM subscriptions WHERE item_count = 5") == 6
     assert await connection.fetchval("SELECT local_time FROM delivery_slots") == time(8, 30)
+    # The seeded owner has no passkey: the owner is enrolled through the CLI link (AUTH-16).
+    assert await connection.fetchval("SELECT count(*) FROM passkey_credentials") == 0
 
 
-async def test_production_seed_only_allowlists(connection, monkeypatch):
-    monkeypatch.setenv("OWNER_EMAIL", "owner@example.com")
+async def test_production_seed_creates_nothing(connection, monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     await seed()
-    await seed()
-    assert await connection.fetchval("SELECT count(*) FROM allowed_emails") == 1
     for table in ("profiles", "topics", "subscriptions", "delivery_slots", "agent_settings"):
         assert await connection.fetchval(f"SELECT count(*) FROM {table}") == 0
 
 
-async def test_seed_refuses_changed_local_identity_atomically(connection, monkeypatch):
-    monkeypatch.setenv("OWNER_EMAIL", "owner@example.com")
-    monkeypatch.setenv("APP_ENV", "local")
-    await seed()
-    monkeypatch.setenv("OWNER_EMAIL", "reader@example.com")
-    with pytest.raises(ValueError, match="identity differs"):
-        await seed()
-    assert await connection.fetchval("SELECT count(*) FROM allowed_emails") == 1
-
-
-@pytest.mark.parametrize(
-    "app_env,email", [("production", ""), ("local", "invalid"), ("staging", "owner@example.com")]
-)
-async def test_seed_requires_explicit_configuration(connection, monkeypatch, app_env, email):
+@pytest.mark.parametrize("app_env", ["", "staging", "prod"])
+async def test_seed_requires_explicit_configuration(connection, monkeypatch, app_env):
     monkeypatch.setenv("APP_ENV", app_env)
-    monkeypatch.setenv("OWNER_EMAIL", email)
     with pytest.raises(ValueError):
         await seed()
-    assert await connection.fetchval("SELECT count(*) FROM allowed_emails") == 0
+    assert await connection.fetchval("SELECT count(*) FROM profiles") == 0
 
 
 @pytest.mark.asyncio
 async def test_cli_does_not_log_configuration_or_parameters(database, monkeypatch):
-    monkeypatch.setenv("OWNER_EMAIL", "owner@example.com")
     monkeypatch.setenv("APP_ENV", "bad-config")
     result = await asyncio.to_thread(
         subprocess.run,
@@ -421,7 +398,6 @@ async def test_cli_does_not_log_configuration_or_parameters(database, monkeypatc
         env=os.environ.copy(),
     )
     assert result.returncode != 0
-    assert "owner@example.com" not in result.stdout + result.stderr
     assert database not in result.stdout + result.stderr
 
 
@@ -432,8 +408,7 @@ async def test_upgrade_downgrade_upgrade(database, connection):
     fresh = await asyncpg.connect(database)
     try:
         assert (
-            await fresh.fetchval("SELECT version_num FROM alembic_version")
-            == "0005_source_url_host"
+            await fresh.fetchval("SELECT version_num FROM alembic_version") == "0006_passkey_auth"
         )
         assert await fresh.fetchval("SELECT count(*) FROM profiles") == 0
     finally:

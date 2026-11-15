@@ -134,3 +134,27 @@ seed behavior and downgrade/upgrade.
 The image copies only dependency metadata, migrations and the command package.
 The per-service `.dockerignore` excludes other files by default, including docs,
 agent configuration, tests, local environments and `.env` files.
+
+## Passkey auth cutover (revision `0006_passkey_auth`)
+
+Implements `docs/auth-passkey-design.md` sections 4 and 10: drops `invite_redemptions`,
+`invite_codes`, `allowed_emails` and `profiles.email`, restricts `profiles.status` to
+`active|disabled`, creates `enrollment_tokens`, `passkey_credentials`, `auth_sessions`,
+`webauthn_ceremonies`, `auth_rate_limits`, `auth_events`, and replaces the restrictive deny
+policy with per-role grants and policies for `brief_runtime` and `brief_admin`
+(client roles get no policy). The upgrade **stops without changing anything** if a `pending`
+profile or a profile other than `OWNER_USER_ID` exists (the ids are listed, no emails).
+Set `OWNER_USER_ID` when upgrading a database that already has the local owner.
+The downgrade is not lossless (emails become placeholders, admission and auth data are gone).
+
+Roles: `brief_migrator` owns the tables and runs migrations (`MIGRATION_DATABASE_URL`, falling
+back to `DATABASE_URL` for host development and tests); `brief_runtime` (`DATABASE_URL`) and
+`brief_admin` (`ADMIN_DATABASE_URL`) are LOGIN roles. The migration creates any missing role
+as `NOLOGIN` so grants are valid. Locally, when `APP_ENV=local` and all three URLs are set,
+`python -m brief_db` first runs a role bootstrap as `POSTGRES_USER` (creates the login roles with
+the passwords from those URLs, grants `brief_migrator` its rights and transfers ownership of
+existing tables). Production roles are created by Kai.
+
+Seed (`seed` / `init`): local only, owner `00000000-0000-4000-8000-000000000001` without email
+or passkey, six default topics and one 07:00 slot. Production seeds nothing; use
+`auth_admin bootstrap-owner`.

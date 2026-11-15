@@ -117,9 +117,9 @@ async def connection(database):
 
 
 @pytest_asyncio.fixture
-async def owner(connection):
+async def owner(connection, monkeypatch):
     user_id = uuid4()
-    await connection.execute(
-        "INSERT INTO profiles (user_id, email) VALUES ($1, 'owner@example.com')", user_id
-    )
+    await connection.execute("INSERT INTO profiles (user_id) VALUES ($1)", user_id)
+    # The auth migration (0006) only accepts the configured owner profile when upgrading.
+    monkeypatch.setenv("OWNER_USER_ID", str(user_id))
     return user_id

@@ -19,33 +19,24 @@ DEFAULT_TOPICS = (
 
 
 async def seed():
-    email = os.environ.get("OWNER_EMAIL", "").strip().lower()
-    if not email or email.count("@") != 1 or any(c.isspace() for c in email):
-        raise ValueError("OWNER_EMAIL must be supplied in the environment")
+    """Local seed: the owner profile (no email, no passkey) with default topics and one slot.
+
+    Production creates nothing here: the owner is bootstrapped with `auth_admin bootstrap-owner`.
+    """
     app_env = os.environ.get("APP_ENV")
     if app_env not in {"local", "production"}:
         raise ValueError("APP_ENV must be explicitly local or production")
+    if app_env != "local":
+        return
     engine = create_async_engine(database_url(), poolclass=NullPool, hide_parameters=True)
     try:
         async with engine.begin() as connection:
+            owner = {"user_id": LOCAL_OWNER_ID}
             await connection.execute(
-                text("INSERT INTO allowed_emails (email) VALUES (:email) ON CONFLICT DO NOTHING"),
-                {"email": email},
-            )
-            if app_env != "local":
-                return
-            owner = {"user_id": LOCAL_OWNER_ID, "email": email}
-            await connection.execute(
-                text("""INSERT INTO profiles (user_id, email, display_name, status)
-                    VALUES (:user_id, :email, 'Local owner', 'active') ON CONFLICT DO NOTHING"""),
+                text("""INSERT INTO profiles (user_id, display_name, status)
+                    VALUES (:user_id, 'Local owner', 'active') ON CONFLICT DO NOTHING"""),
                 owner,
             )
-            # Fail rather than attach fixtures to a different identity after configuration changes.
-            actual = await connection.scalar(
-                text("SELECT email FROM profiles WHERE user_id = :user_id"), owner
-            )
-            if actual != email:
-                raise ValueError("Local owner identity differs; use a fresh local database")
             await connection.execute(
                 text(
                     "INSERT INTO agent_settings (user_id) VALUES (:user_id) ON CONFLICT DO NOTHING"
