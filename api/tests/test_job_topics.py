@@ -70,7 +70,7 @@ async def test_result_cannot_reference_another_users_topic(env, visibility):
     other = uuid4()
     async with env["database"].transaction() as db:
         await db.execute(
-            "INSERT INTO profiles (user_id,email,status) VALUES (%s,'other@example.com','active')",
+            "INSERT INTO profiles (user_id,status) VALUES (%s,'active')",
             (other,),
         )
         topic = await db.one(

@@ -143,9 +143,7 @@ class PostgresJobQueue:
             # quota decisions. Check fresh settings and timezone under that lock.
             user = await profiles.lock_user(db, user_id)
             if user["status"] != "active":
-                raise Problem(
-                    403, "account_disabled" if user["status"] == "disabled" else "account_pending"
-                )
+                raise Problem(403, "account_disabled")
             settings = await profiles.job_settings(db, user_id)
             if not owner_allowed(self.settings, {"user_id": user_id, "runner": settings["runner"]}):
                 raise Problem(403, "owner_only")

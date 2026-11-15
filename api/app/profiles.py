@@ -3,53 +3,40 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Request
 
-from app.auth import Identity, principal
+from app.auth import Authenticated
 from app.contract import body, fields
 from app.problems import Problem
 
 router = APIRouter(prefix="/api/v1")
-PROFILE_FIELDS = (
-    "user_id email display_name avatar_url bio timezone locale status created_at updated_at"
-)
+PROFILE_FIELDS = "user_id display_name avatar_url bio timezone locale status created_at updated_at"
 
 
-async def profile(request: Request, identity: Annotated[Identity, Depends(principal)]):
+async def profile(request: Request, me: Authenticated):
+    """The signed-in user's profile. Profiles are never created here (AUTH-1)."""
     async with request.app.state.database.transaction() as db:
-        await db.execute(
-            "INSERT INTO profiles (user_id, email, status) "
-            "VALUES (%s, %s, CASE WHEN EXISTS (SELECT 1 FROM allowed_emails WHERE email=%s) "
-            "THEN 'active' ELSE 'pending' END) ON CONFLICT (user_id) DO NOTHING",
-            (identity.user_id, identity.email, identity.email),
-        )
-        row = await db.one("SELECT * FROM profiles WHERE user_id=%s", (identity.user_id,))
-        await db.execute(
-            "INSERT INTO agent_settings (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-            (identity.user_id,),
-        )
-    if row["status"] == "disabled":
-        raise Problem(403, "account_disabled")
+        row = await db.one("SELECT * FROM profiles WHERE user_id=%s", (me.user_id,))
+    if row is None or row["status"] != "active":
+        raise Problem(401, "unauthorized")
     return fields(row, PROFILE_FIELDS)
 
 
-async def active(user: Annotated[dict, Depends(profile)]):
-    if user["status"] != "active":
-        raise Problem(403, "account_pending")
-    return user
-
-
-User = Annotated[dict, Depends(active)]
-SignedIn = Annotated[dict, Depends(profile)]
+User = Annotated[dict, Depends(profile)]
+SignedIn = User
 
 
 async def lock_user(db, user_id):
     return await db.one("SELECT * FROM profiles WHERE user_id=%s FOR UPDATE", (user_id,))
 
 
-async def scheduler_users(db):
+async def scheduler_users(db, *, local=False):
+    """Active profiles with a valid passkey (AUTH-16); APP_ENV=local also serves the seed owner."""
     return await db.all(
         "SELECT p.*, a.runner, a.daily_run_limit FROM profiles p "
         "JOIN agent_settings a USING (user_id) WHERE p.status='active' "
-        "ORDER BY p.user_id FOR UPDATE OF p SKIP LOCKED"
+        "AND (%s OR EXISTS (SELECT 1 FROM passkey_credentials c "
+        "WHERE c.user_id = p.user_id AND c.revoked_at IS NULL)) "
+        "ORDER BY p.user_id FOR UPDATE OF p SKIP LOCKED",
+        (local,),
     )
 
 
@@ -80,36 +67,6 @@ async def update_me(request: Request, user: User):
         raise Problem(422, "validation_error", "Locale must contain 2 to 35 characters")
     async with request.app.state.database.transaction() as db:
         row = await db.update("profiles", data, "user_id=%s", (user["user_id"],))
-    return fields(row, PROFILE_FIELDS)
-
-
-@router.post("/auth/redeem-invite", operation_id="redeemInvite")
-async def redeem_invite(request: Request, user: SignedIn):
-    data = await body(request, "redeemInvite")
-    async with request.app.state.database.transaction() as db:
-        row = await db.one("SELECT * FROM profiles WHERE user_id=%s FOR UPDATE", (user["user_id"],))
-        if row["status"] == "active":
-            raise Problem(409, "already_active")
-        if row["status"] == "disabled":
-            raise Problem(403, "account_disabled")
-        code = await db.one(
-            "SELECT *, now() AS current_time FROM invite_codes WHERE code=%s FOR UPDATE",
-            (data["code"],),
-        )
-        if not code:
-            raise Problem(404, "invite_not_found")
-        if code["expires_at"] is not None and code["expires_at"] <= code["current_time"]:
-            raise Problem(409, "invite_expired")
-        if code["used_count"] >= code["max_uses"]:
-            raise Problem(409, "invite_exhausted")
-        await db.execute(
-            "UPDATE invite_codes SET used_count=used_count+1 WHERE code=%s", (data["code"],)
-        )
-        await db.execute(
-            "INSERT INTO invite_redemptions (code, user_id) VALUES (%s, %s)",
-            (data["code"], user["user_id"]),
-        )
-        row = await db.update("profiles", {"status": "active"}, "user_id=%s", (user["user_id"],))
     return fields(row, PROFILE_FIELDS)
 
 

@@ -28,12 +28,13 @@ class Session:
 
 
 class Database:
-    def __init__(self, settings):
+    def __init__(self, settings, url=None):
         self.settings = settings
+        self.url = url or settings.database_url
 
     @asynccontextmanager
     async def transaction(self):
-        url = self.settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        url = self.url.replace("postgresql+asyncpg://", "postgresql://", 1)
         url = url.replace("postgresql+psycopg://", "postgresql://", 1)
         if not url.startswith("postgresql://"):
             raise ValueError("DATABASE_URL must be a PostgreSQL URL")

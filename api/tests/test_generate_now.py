@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from conftest import OWNER, claim, queued_job, subscribe, token
+from conftest import OWNER, claim, queued_job, subscribe
 
 from app.dispatch import LocalDispatcher
 from app.jobs import daily_window
@@ -26,14 +26,10 @@ async def job_count(env):
 
 async def other_user(env, status="active"):
     user_id = uuid4()
-    async with env["database"].transaction() as db:
-        await db.execute(
-            "INSERT INTO profiles (user_id,email,status) VALUES (%s,'other@example.com',%s)",
-            (user_id, status),
-        )
-    return user_id, {
-        "Authorization": "Bearer " + token(env["settings"], user_id, "other@example.com")
-    }
+    async with env["super"].transaction() as db:
+        await db.execute("INSERT INTO profiles (user_id,status) VALUES (%s,%s)", (user_id, status))
+        await db.execute("INSERT INTO agent_settings (user_id) VALUES (%s)", (user_id,))
+    return user_id, await env["as_user"](user_id)
 
 
 async def test_generate_commits_before_dispatch_and_returns_only_user_fields(env, dispatcher):
@@ -189,12 +185,10 @@ async def test_manual_run_consumes_scheduler_daily_quota(env):
 
 
 async def test_non_owner_subscription_runner_is_rejected_without_a_job(env, dispatcher):
-    other, headers = await other_user(env)
-    response = await env["client"].post(
-        "/v1/subscriptions", headers=headers, json={"title": "Other topic"}
-    )
+    other, client = await other_user(env)
+    response = await client.post("/v1/subscriptions", json={"title": "Other topic"})
     assert response.status_code == 201
-    response = await env["client"].post("/v1/jobs", headers=headers)
+    response = await client.post("/v1/jobs")
     assert response.status_code == 403
     assert response.json()["code"] == "owner_only"
     assert other != OWNER
@@ -212,13 +206,13 @@ async def test_missing_owner_fails_closed_for_manual_jobs(env, dispatcher):
 
 
 async def test_api_runner_for_non_owner_is_not_blocked_by_owner_only(env, dispatcher):
-    other, headers = await other_user(env)
-    await env["client"].post("/v1/subscriptions", headers=headers, json={"title": "Other topic"})
+    other, client = await other_user(env)
+    await client.post("/v1/subscriptions", json={"title": "Other topic"})
     async with env["database"].transaction() as db:
         await db.execute(
             "UPDATE agent_settings SET runner='anthropic_api' WHERE user_id=%s", (other,)
         )
-    response = await env["client"].post("/v1/jobs", headers=headers)
+    response = await client.post("/v1/jobs")
     assert response.status_code == 202
     async with env["database"].transaction() as db:
         job = await db.one("SELECT user_id,runner FROM jobs")
@@ -328,24 +322,26 @@ async def test_active_job_does_not_expose_previous_attempt_error(env, dispatcher
 
 async def test_polling_hides_other_users_jobs_and_unknown_ids(env, dispatcher):
     job = await queued_job(env)
-    _, headers = await other_user(env)
-    assert (await env["client"].get(f"/v1/jobs/{job['id']}", headers=headers)).status_code == 404
+    _, client = await other_user(env)
+    assert (await client.get(f"/v1/jobs/{job['id']}")).status_code == 404
     assert (await env["client"].get(f"/v1/jobs/{uuid4()}")).status_code == 404
     assert (await env["client"].get("/v1/jobs/invalid")).status_code == 400
 
 
-@pytest.mark.parametrize("status", ["pending", "disabled"])
-async def test_manual_routes_enforce_account_gate(env, dispatcher, status):
-    _, headers = await other_user(env, status=status)
+async def test_disabled_account_is_signed_out_of_manual_routes(env, dispatcher):
+    _, client = await other_user(env, status="disabled")
     for method, path in [("POST", "/v1/jobs"), ("GET", f"/v1/jobs/{uuid4()}")]:
-        response = await env["client"].request(method, path, headers=headers)
-        assert response.status_code == 403
-        assert response.json()["code"] == "account_" + status
+        response = await client.request(method, path)
+        assert response.status_code == 401
+        assert response.json()["code"] == "unauthorized"
     assert await job_count(env) == 0
 
 
 @pytest.mark.parametrize("credential", ["none", "internal"])
-async def test_manual_routes_require_user_jwt(env, dispatcher, credential):
+async def test_manual_routes_require_a_session(env, dispatcher, credential):
     headers = {} if credential == "none" else env["internal"]
-    assert (await env["client"].post("/v1/jobs", headers=headers)).status_code == 401
-    assert (await env["client"].get(f"/v1/jobs/{uuid4()}", headers=headers)).status_code == 401
+    anonymous = env["browser"]()
+    assert (await anonymous.post("/v1/jobs", headers=headers, contract=False)).status_code == 401
+    assert (
+        await anonymous.get(f"/v1/jobs/{uuid4()}", headers=headers, contract=False)
+    ).status_code == 401

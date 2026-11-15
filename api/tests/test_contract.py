@@ -1,10 +1,11 @@
 import runpy
 from pathlib import Path
 
+from conftest import make_settings
 from fastapi.openapi.utils import get_openapi
 
 from app.contract import SPEC
-from app.main import app
+from app.main import create_app
 
 
 def test_packaged_contract_matches_authoritative_files():
@@ -15,6 +16,7 @@ def test_packaged_contract_matches_authoritative_files():
 
 
 def test_every_contract_operation_has_a_route():
+    app = create_app(make_settings("postgresql://postgres@127.0.0.1:1/unused"))
     expected = {
         operation["operationId"]
         for methods in SPEC["paths"].values()

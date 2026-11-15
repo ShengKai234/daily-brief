@@ -1,120 +1,109 @@
-import asyncio
+"""Request authentication: browser sessions on /v1 and the service token on /internal."""
+
 import hmac
-import time
 from dataclasses import dataclass
-from typing import Protocol
+from datetime import datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
-import httpx
-import jwt
-from fastapi import Request
+from fastapi import Depends, Request
 
+from app import clock
 from app.problems import Problem
+from app.security import TOKEN_RE, cookie_values, token_hash
+
+IDLE = timedelta(days=30)
+ABSOLUTE = timedelta(days=90)
+TOUCH_AFTER = timedelta(hours=1)
+REAUTH_WINDOW = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
-class Identity:
+class Principal:
     user_id: UUID
-    email: str
+    session_id: UUID
+    credential_id: UUID | None  # passkey_credentials.id the session was created with
+    kind: str
+    reauth_at: datetime | None
+    absolute_expires_at: datetime
+
+    def recently_reauthenticated(self, now) -> bool:
+        return self.reauth_at is not None and now - self.reauth_at <= REAUTH_WINDOW
 
 
-class AuthVerifier(Protocol):
-    async def verify(self, token: str) -> Identity: ...
+def raw_cookie_headers(request: Request):
+    return [
+        value.decode("latin-1") for name, value in request.scope["headers"] if name == b"cookie"
+    ]
 
 
-def identity(claims):
-    if claims.get("role") != "authenticated":
-        raise ValueError("Invalid role")
-    email = claims["email"]
-    if not isinstance(email, str) or "@" not in email:
-        raise ValueError("Missing email")
-    return Identity(UUID(claims["sub"]), email.lower())
-
-
-REQUIRED = ["sub", "email", "exp", "iat", "aud", "iss", "role"]
-
-
-class DevVerifier:
-    def __init__(self, settings):
-        if settings.app_env != "local":
-            raise ValueError("Dev authentication requires local environment")
-        self.secret = settings.dev_jwt_secret
-
-    async def verify(self, token):
-        if not self.secret:
-            raise ValueError("Dev key is not configured")
-        return identity(
-            jwt.decode(
-                token,
-                self.secret,
-                algorithms=["HS256"],
-                audience="authenticated",
-                issuer="daily-brief-local",
-                options={"require": REQUIRED},
-            )
-        )
-
-
-class SupabaseVerifier:
-    def __init__(self, settings):
-        self.issuer = settings.supabase_url.rstrip("/") + "/auth/v1"
-        self.url = settings.supabase_jwks_url or self.issuer + "/.well-known/jwks.json"
-        if not self.url.startswith("https://"):
-            raise ValueError("JWKS requires HTTPS")
-        self.keys = {}
-        self.expires = 0
-        self.last_fetch = -30
-        self.lock = asyncio.Lock()
-
-    async def verify(self, token):
-        header = jwt.get_unverified_header(token)
-        if header.get("alg") not in {"RS256", "ES256"} or not header.get("kid"):
-            raise ValueError("Unsupported signing algorithm")
-        now = time.monotonic()
-        if now >= self.expires or header["kid"] not in self.keys:
-            async with self.lock:
-                if time.monotonic() - self.last_fetch >= 30:
-                    self.last_fetch = time.monotonic()
-                    async with httpx.AsyncClient(timeout=5) as client:
-                        response = await client.get(self.url)
-                        response.raise_for_status()
-                        self.keys = {
-                            key["kid"]: jwt.PyJWK.from_dict(key)
-                            for key in response.json()["keys"]
-                            if key.get("alg") in {"RS256", "ES256"}
-                        }
-                    self.expires = time.monotonic() + 300
-        key = self.keys[header["kid"]]
-        if key.algorithm_name != header["alg"]:
-            raise ValueError("Signing key mismatch")
-        return identity(
-            jwt.decode(
-                token,
-                key.key,
-                algorithms=[key.algorithm_name],
-                audience="authenticated",
-                issuer=self.issuer,
-                options={"require": REQUIRED},
-            )
-        )
-
-
-async def principal(request: Request):
-    authorization = request.headers.get("Authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token or request.headers.get("X-Internal-Token"):
+def session_cookie_value(request: Request, settings):
+    values = cookie_values(raw_cookie_headers(request), settings.session_cookie)
+    if len(values) != 1 or not TOKEN_RE.fullmatch(values[0]):
         raise Problem(401, "unauthorized")
-    try:
-        return await request.app.state.verifier.verify(token)
-    except (jwt.PyJWTError, ValueError, KeyError, TypeError, httpx.HTTPError) as exc:
-        raise Problem(401, "unauthorized") from exc
+    return values[0]
+
+
+class SessionAuthenticator:
+    """AUTH-10: every request checks the session, its passkey and the profile in the database."""
+
+    def __init__(self, settings, database):
+        self.settings = settings
+        self.database = database
+
+    async def authenticate(self, request: Request) -> Principal:
+        value = session_cookie_value(request, self.settings)
+        now = clock.now()
+        async with self.database.transaction() as db:
+            row = await db.one(
+                "SELECT s.id, s.user_id, s.kind, s.credential_id, s.reauth_at, s.last_seen_at, "
+                "s.absolute_expires_at FROM auth_sessions s "
+                "JOIN profiles p ON p.user_id = s.user_id "
+                "LEFT JOIN passkey_credentials c ON c.id = s.credential_id "
+                "WHERE s.token_hash = %s AND s.revoked_at IS NULL "
+                "AND s.idle_expires_at > %s AND s.absolute_expires_at > %s "
+                "AND p.status = 'active' "
+                "AND ((s.kind = 'passkey' AND c.user_id = s.user_id AND c.revoked_at IS NULL) "
+                "     OR (s.kind = 'dev' AND %s))",
+                (token_hash(value), now, now, self.settings.local),
+            )
+            if row is None:
+                raise Problem(401, "unauthorized")
+            if now - row["last_seen_at"] > TOUCH_AFTER:
+                await db.execute(
+                    "UPDATE auth_sessions SET last_seen_at = %s, "
+                    "idle_expires_at = least(%s, absolute_expires_at) "
+                    "WHERE id = %s AND revoked_at IS NULL AND idle_expires_at > %s",
+                    (now, now + IDLE, row["id"], now),
+                )
+        return Principal(
+            user_id=row["user_id"],
+            session_id=row["id"],
+            credential_id=row["credential_id"],
+            kind=row["kind"],
+            reauth_at=row["reauth_at"],
+            absolute_expires_at=row["absolute_expires_at"],
+        )
+
+
+async def principal(request: Request) -> Principal:
+    return await request.app.state.authenticator.authenticate(request)
+
+
+Authenticated = Annotated[Principal, Depends(principal)]
 
 
 async def internal_auth(request: Request):
-    expected = request.app.state.settings.internal_service_token
+    settings = request.app.state.settings
+    expected = settings.internal_service_token
     actual = request.headers.get("X-Internal-Token", "")
+    has_session = bool(
+        cookie_values(raw_cookie_headers(request), settings.session_cookie)
+        or cookie_values(raw_cookie_headers(request), settings.binding_cookie)
+    )
     if (
         request.headers.get("Authorization")
+        or has_session
         or not expected
         or not hmac.compare_digest(actual.encode(), expected.encode())
     ):

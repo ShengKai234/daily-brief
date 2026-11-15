@@ -4,7 +4,7 @@
     "title": "Daily Brief API",
     "version": "0.1.0",
     "summary": "Contract shared by the web app, the future iOS app, and the agent worker.",
-    "description": "Single contract for the Daily Brief backend. Client types are generated from this file.\n\nFull URLs are `/api/v1/...` (public), `/api/health`, and `/api/internal/...` (worker only).\n\n**Authentication.** Every `/v1` route requires a user JWT (`userJwt`) issued by the identity\nprovider. Every `/internal` route requires the service token in the `X-Internal-Token` header\n(`internalToken`). Internal routes do not accept a user JWT, and `/v1` routes do not accept the\ninternal token. `/health` is unauthenticated.\n\n**Registration gate.** A profile has `status` of `pending`, `active` or `disabled`. On first\nsign-in the backend creates a profile: `active` if the email is on the allowlist, otherwise\n`pending`. A `pending` account may call only `GET /v1/me` and `POST /v1/auth/redeem-invite`;\nevery other `/v1` route returns 403 with code `account_pending`. A `disabled` account gets\n403 with code `account_disabled` on every `/v1` route, including `GET /v1/me`.\n\n**Errors.** All errors are RFC 9457 `application/problem+json` (`Problem`) with a\nmachine-readable `code`.\n",
+    "description": "Single contract for the Daily Brief backend. Client types are generated from this file.\n\nFull URLs are `/api/v1/...` (public), `/api/health`, and `/api/internal/...` (worker only).\n\n**Authentication** (DESIGN 3.4, `docs/auth-passkey-design.md`). Users sign in with passkeys\n(WebAuthn). Every `/v1` route requires the session cookie (`sessionCookie`), except the four\npublic sign-in operations under `/v1/auth/registration/*` and `/v1/auth/login/*`. A session is\nvalid only if it is unrevoked, within its idle and absolute lifetime and `profiles.status` is\n`active`; a `kind='passkey'` session also needs its passkey to be active and owned by the same user,\nand a `kind='dev'` session is accepted only when `APP_ENV=local`. Otherwise 401 `unauthorized`. Every `/internal` route requires the\nservice token in `X-Internal-Token` (`internalToken`). `/v1` rejects the internal token and any\n`Authorization: Bearer` header (401 `unauthorized`), on public sign-in operations too; `/internal`\nrejects session cookies. `/health` is unauthenticated.\n\n**Request rules for `/v1`.** Every unsafe method (POST, PUT, PATCH, DELETE), including the public\nsign-in operations and logout, needs exactly one `Origin` header equal to a configured origin,\notherwise 403 `origin_mismatch`. Operations with a body need `Content-Type: application/json`\n(415 `unsupported_media_type`); bodyless operations accept an empty body. Public sign-in bodies\nare limited to 64 KB (413 `payload_too_large`). Check order: route family, body size, Origin,\nmedia type, rate limit, authentication, reauthentication, validation, state conflict. All `/api`\nresponses carry `Cache-Control: no-store`. `/internal` does not check `Origin`.\n\n**Registration gate.** A profile is created only by `registerVerify` with an invite token, or by\nthe admin CLI for the owner. Signing in never creates a profile. `status` is `active` or\n`disabled`. A disabled account's sessions are revoked, so session-authenticated routes return 401;\nthe public sign-in and registration operations return 403 `account_disabled`, at login only after a\nvalid passkey proof.\n\n**Errors.** All errors are RFC 9457 `application/problem+json` (`Problem`) with a\nmachine-readable `code`.\n",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -27,7 +27,7 @@
     },
     {
       "name": "auth",
-      "description": "Registration gate."
+      "description": "Passkey sign-in, sessions and passkey management."
     },
     {
       "name": "topics",
@@ -64,7 +64,7 @@
   ],
   "security": [
     {
-      "userJwt": []
+      "sessionCookie": []
     }
   ],
   "paths": {
@@ -108,7 +108,7 @@
       "get": {
         "operationId": "getMe",
         "summary": "Read the caller's profile",
-        "description": "Allowed for `pending` accounts. Creates the profile on first sign-in.",
+        "description": "Returns 401 when not signed in; the web app shows the sign-in page then.",
         "tags": [
           "profile"
         ],
@@ -171,6 +171,9 @@
           "403": {
             "$ref": "#/components/responses/ForbiddenAccount"
           },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
           },
@@ -180,41 +183,95 @@
         }
       }
     },
-    "/v1/auth/redeem-invite": {
+    "/v1/auth/registration/options": {
       "post": {
-        "operationId": "redeemInvite",
-        "summary": "Redeem an invite code",
-        "description": "Moves a `pending` account to `active`. Allowed for `pending` accounts.",
+        "operationId": "registerOptions",
+        "summary": "Start registering a passkey with an enrollment token",
+        "description": "Public. The token comes from the enrollment link's URL fragment. Validates the token without\nusing it, increments its lifetime `options_count` (limit 10, committed even on failure), creates a\nceremony bound to this browser (sets or refreshes the browser-binding cookie) and returns\nWebAuthn creation options. `display_name` is accepted only for invite tokens. Invite tokens and\ntokens for a non-owner are refused with 403 `admission_disabled` while non-owner admission is off.\n",
         "tags": [
           "auth"
         ],
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "code"
-                ],
-                "properties": {
-                  "code": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 64,
-                    "examples": [
-                      "EXAMPLE-CODE"
-                    ]
-                  }
-                }
+                "$ref": "#/components/schemas/RegistrationOptionsRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "The now-active profile.",
+            "description": "Creation options.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/BindingCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CeremonyOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/AuthBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/AuthForbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/TokenConflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/registration/verify": {
+      "post": {
+        "operationId": "registerVerify",
+        "summary": "Finish registering a passkey",
+        "description": "Public. Verifies the attestation (user verification required) and, in one transaction, creates the\nprofile (invite), replaces all old passkeys and sessions (recovery) or adds a passkey\n(add_credential), uses the token and starts a new session. A valid but failed proof consumes the\nceremony; a request from another browser consumes nothing.\n",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; the profile.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -224,7 +281,466 @@
             }
           },
           "400": {
-            "$ref": "#/components/responses/BadRequest"
+            "$ref": "#/components/responses/AuthBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/AuthForbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/TokenConflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/login/options": {
+      "post": {
+        "operationId": "loginOptions",
+        "summary": "Start signing in with a passkey",
+        "description": "Public. Returns request options with an empty `allowCredentials` (discoverable passkeys).",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request options.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/BindingCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CeremonyOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/AuthForbidden"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/login/verify": {
+      "post": {
+        "operationId": "loginVerify",
+        "summary": "Finish signing in with a passkey",
+        "description": "Public. Any failed proof returns the same 401 `authentication_failed` body (unknown, revoked or\nmismatched credential, bad signature, missing user verification, counter regression on a\ndevice-bound passkey). 403 `account_disabled` only after a valid proof.\n",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CeremonyVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; the profile.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/AuthBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationFailed"
+          },
+          "403": {
+            "$ref": "#/components/responses/AuthForbidden"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "Sign out this browser",
+        "description": "No body. Revokes the current session and clears the cookie (same name and attributes, `Max-Age=0`).",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "204": {
+            "description": "Signed out.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          }
+        }
+      }
+    },
+    "/v1/auth/reauth/options": {
+      "post": {
+        "operationId": "reauthOptions",
+        "summary": "Start a reauthentication",
+        "description": "No body. `allowCredentials` lists the caller's active passkeys. The ceremony is bound to this session.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Request options.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/BindingCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CeremonyOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/v1/auth/reauth/verify": {
+      "post": {
+        "operationId": "reauthVerify",
+        "summary": "Finish a reauthentication",
+        "description": "The passkey must belong to the session's user. On success sensitive actions are allowed for 5 minutes.",
+        "tags": [
+          "auth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CeremonyVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Reauthenticated."
+          },
+          "400": {
+            "$ref": "#/components/responses/AuthBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationFailed"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        }
+      }
+    },
+    "/v1/me/passkeys": {
+      "get": {
+        "operationId": "listPasskeys",
+        "summary": "List the caller's active passkeys",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Passkeys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "passkeys"
+                  ],
+                  "properties": {
+                    "passkeys": {
+                      "type": "array",
+                      "maxItems": 10,
+                      "items": {
+                        "$ref": "#/components/schemas/Passkey"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/me/passkeys/options": {
+      "post": {
+        "operationId": "addPasskeyOptions",
+        "summary": "Start adding a passkey on this device",
+        "description": "No body. Needs a reauthentication within 5 minutes. `excludeCredentials` lists the caller's active passkeys.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Creation options.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/BindingCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CeremonyOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ReauthRequired"
+          },
+          "409": {
+            "$ref": "#/components/responses/PasskeyConflict"
+          }
+        }
+      }
+    },
+    "/v1/me/passkeys/verify": {
+      "post": {
+        "operationId": "addPasskeyVerify",
+        "summary": "Finish adding a passkey",
+        "description": "The reauthentication must still be within 5 minutes. At most 10 active passkeys per user.",
+        "tags": [
+          "auth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new passkey.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Passkey"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/AuthBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ReauthRequired"
+          },
+          "409": {
+            "$ref": "#/components/responses/PasskeyConflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          }
+        }
+      }
+    },
+    "/v1/me/passkeys/{passkey_id}": {
+      "delete": {
+        "operationId": "deletePasskey",
+        "summary": "Revoke one of the caller's passkeys",
+        "description": "Needs a reauthentication within 5 minutes. Refused for the last active passkey (409 `last_passkey`).\nRevokes every session created with it; if that includes the current session, the response also\nclears the cookie. Another user's id is 404.\n",
+        "tags": [
+          "auth"
+        ],
+        "parameters": [
+          {
+            "name": "passkey_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ReauthRequired"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PasskeyConflict"
+          }
+        }
+      }
+    },
+    "/v1/me/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "List the caller's signed-in sessions",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "sessions"
+                  ],
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "$ref": "#/components/schemas/Session"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/me/sessions/{session_id}": {
+      "delete": {
+        "operationId": "deleteSession",
+        "summary": "Revoke one of the caller's sessions",
+        "description": "Revoking the current session is the same as logout. Another user's id is 404.",
+        "tags": [
+          "auth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked.",
+            "headers": {
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -233,30 +749,7 @@
             "$ref": "#/components/responses/ForbiddenAccount"
           },
           "404": {
-            "description": "Code does not exist. Code `invite_not_found`.",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflict. Code is one of `invite_exhausted`, `invite_expired`, `already_active`.\n",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "$ref": "#/components/responses/Unprocessable"
-          },
-          "429": {
-            "$ref": "#/components/responses/TooManyRequests"
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -341,6 +834,9 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
           },
@@ -397,6 +893,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
           },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
@@ -519,6 +1018,9 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
           },
@@ -572,6 +1074,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
           },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
@@ -674,6 +1179,9 @@
           },
           "403": {
             "$ref": "#/components/responses/ForbiddenAccount"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
           },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
@@ -844,6 +1352,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
           },
@@ -917,7 +1428,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Code `agent_settings_locked` (every change in the POC), or an account-state error\n(`account_pending`, `account_disabled`).\n",
+            "description": "Code `agent_settings_locked` (every change in the POC) or `origin_mismatch`.\n",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -925,6 +1436,9 @@
                 }
               }
             }
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
           },
           "422": {
             "$ref": "#/components/responses/Unprocessable"
@@ -958,7 +1472,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
-            "description": "Account gate (`account_pending`, `account_disabled`) or `owner_only`.",
+            "description": "`origin_mismatch` or `owner_only`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1299,11 +1813,11 @@
   },
   "components": {
     "securitySchemes": {
-      "userJwt": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT",
-        "description": "JWT from the identity provider. Accepted on `/v1` routes only."
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-brief_session",
+        "description": "Opaque session token set by a successful sign-in or registration. `Secure; HttpOnly;\nSameSite=Strict; Path=/`. Locally (`APP_ENV=local`) the name is `brief_session_<COMPOSE_PROJECT_NAME>`\nwithout `Secure`. Accepted on `/v1` routes only.\n"
       },
       "internalToken": {
         "type": "apiKey",
@@ -1351,6 +1865,20 @@
         }
       }
     },
+    "headers": {
+      "SessionCookie": {
+        "description": "Sets the session cookie `__Host-brief_session=<token>; Secure; HttpOnly; SameSite=Strict; Path=/;\nMax-Age=<seconds until absolute_expires_at>` (host-only, no `Domain`). Clearing uses the same name\nand attributes with `Max-Age=0`. Locally (`APP_ENV=local`) the name is\n`brief_session_<COMPOSE_PROJECT_NAME>` and `Secure` is omitted.\n",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BindingCookie": {
+        "description": "Sets or refreshes the browser-binding cookie `__Host-brief_ceremony=<random>; Secure; HttpOnly;\nSameSite=Strict; Path=/; Max-Age=600` (host-only, no `Domain`). An existing well-formed value is\nreused, so several ceremonies in one browser can run at once. Locally the name is\n`brief_ceremony_<COMPOSE_PROJECT_NAME>` and `Secure` is omitted.\n",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
     "responses": {
       "BadRequest": {
         "description": "Malformed request (code `bad_request`).",
@@ -1363,7 +1891,7 @@
         }
       },
       "Unauthorized": {
-        "description": "Missing, invalid or wrong-kind credential (code `unauthorized`).",
+        "description": "Missing, invalid, expired or revoked session, or a wrong-kind credential such as a Bearer token or\nthe internal token on `/v1` (code `unauthorized`).\n",
         "content": {
           "application/problem+json": {
             "schema": {
@@ -1383,7 +1911,7 @@
         }
       },
       "ForbiddenAccount": {
-        "description": "Account gate. Code `account_pending` (profile is pending and the route is not\n`GET /v1/me` or `POST /v1/auth/redeem-invite`) or `account_disabled`.\n",
+        "description": "Request gate on unsafe methods: `origin_mismatch` (missing, `null`, duplicate or unknown `Origin`).\n",
         "content": {
           "application/problem+json": {
             "schema": {
@@ -1414,6 +1942,86 @@
       },
       "Unprocessable": {
         "description": "Validation failed (code `validation_error`, or a specific code such as\n`slot_limit_exceeded`, `duplicate_slot`, `visibility_not_supported`).\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "AuthBadRequest": {
+        "description": "`ceremony_invalid` (unknown, expired, consumed, wrong purpose or other browser),\n`registration_failed` (attestation rejected), `enrollment_token_invalid` (unknown, revoked or\nsuperseded), `validation_error` or `bad_request`.\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "AuthForbidden": {
+        "description": "`origin_mismatch`, `account_disabled` (after a valid proof) or `admission_disabled`.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "AuthenticationFailed": {
+        "description": "`authentication_failed` for any failed passkey proof (the body is identical for every cause), or\n`unauthorized` for a wrong-family credential (Bearer, internal token) or, on reauth, a missing,\nexpired or revoked session.\n",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "TokenConflict": {
+        "description": "`enrollment_token_used`, `enrollment_token_expired`, `credential_exists` or `passkey_limit` (add_credential token, 10 active passkeys).",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "PasskeyConflict": {
+        "description": "`last_passkey`, `passkey_limit` or `credential_exists`.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "ReauthRequired": {
+        "description": "`reauth_required` (no reauthentication in the last 5 minutes) or `origin_mismatch`.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "Body over 64 KB (code `payload_too_large`), checked before decoding.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "Body is not `application/json` (code `unsupported_media_type`).",
         "content": {
           "application/problem+json": {
             "schema": {
@@ -1476,7 +2084,7 @@
             "type": "string",
             "description": "Machine-readable error code.",
             "examples": [
-              "account_pending"
+              "origin_mismatch"
             ]
           },
           "errors": {
@@ -1505,7 +2113,6 @@
         "additionalProperties": false,
         "required": [
           "user_id",
-          "email",
           "display_name",
           "avatar_url",
           "bio",
@@ -1519,14 +2126,6 @@
           "user_id": {
             "type": "string",
             "format": "uuid"
-          },
-          "email": {
-            "type": "string",
-            "format": "email",
-            "readOnly": true,
-            "examples": [
-              "owner@example.com"
-            ]
           },
           "display_name": {
             "type": "string",
@@ -1565,7 +2164,6 @@
           "status": {
             "type": "string",
             "enum": [
-              "pending",
               "active",
               "disabled"
             ]
@@ -1613,6 +2211,197 @@
               "zh-TW"
             ],
             "description": "BCP 47 language tag."
+          }
+        }
+      },
+      "RegistrationOptionsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enrollment_token"
+        ],
+        "properties": {
+          "enrollment_token": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128,
+            "description": "Base64url token from the enrollment link fragment. Never logged."
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+            "description": "Invite tokens only."
+          }
+        }
+      },
+      "CeremonyOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ceremony_id",
+          "public_key"
+        ],
+        "properties": {
+          "ceremony_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "public_key": {
+            "type": "object",
+            "description": "WebAuthn Level 3 JSON form of `PublicKeyCredentialCreationOptions` (registration, add passkey) or\n`PublicKeyCredentialRequestOptions` (login, reauth), base64url-encoded binary fields. Pass to\n`PublicKeyCredential.parseCreationOptionsFromJSON` / `parseRequestOptionsFromJSON` or an\nequivalent helper.\n",
+            "additionalProperties": true
+          }
+        }
+      },
+      "WebAuthnCredential": {
+        "type": "object",
+        "description": "WebAuthn Level 3 JSON form of the `PublicKeyCredential` returned by the browser (`toJSON()`).",
+        "required": [
+          "id",
+          "rawId",
+          "type",
+          "response"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 1400
+          },
+          "rawId": {
+            "type": "string",
+            "maxLength": 1400
+          },
+          "type": {
+            "type": "string",
+            "const": "public-key"
+          },
+          "response": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "authenticatorAttachment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clientExtensionResults": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegistrationVerifyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ceremony_id",
+          "credential"
+        ],
+        "properties": {
+          "ceremony_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/WebAuthnCredential"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 64
+          }
+        }
+      },
+      "CeremonyVerifyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ceremony_id",
+          "credential"
+        ],
+        "properties": {
+          "ceremony_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/WebAuthnCredential"
+          }
+        }
+      },
+      "Passkey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label",
+          "created_at",
+          "last_used_at",
+          "backup_eligible",
+          "backup_state",
+          "is_current"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "backup_eligible": {
+            "type": "boolean",
+            "description": "Synced-capable passkey."
+          },
+          "backup_state": {
+            "type": "boolean",
+            "description": "Currently backed up or synced."
+          },
+          "is_current": {
+            "type": "boolean",
+            "description": "The current session was created with this passkey."
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "created_at",
+          "last_seen_at",
+          "is_current"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "is_current": {
+            "type": "boolean"
           }
         }
       },

@@ -82,7 +82,7 @@ async def test_scheduler_rejects_non_owner_and_does_not_dispatch(env):
     async with env["database"].transaction() as db:
         other = uuid4()
         await db.execute(
-            "INSERT INTO profiles (user_id,email,status) VALUES (%s,'other@example.com','active')",
+            "INSERT INTO profiles (user_id,status) VALUES (%s,'active')",
             (other,),
         )
         await db.execute("UPDATE agent_settings SET user_id=%s WHERE user_id=%s", (other, OWNER))

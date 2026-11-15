@@ -3,12 +3,10 @@ import secrets
 import shutil
 import subprocess
 import time
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
-import jwt
 import psycopg
 import pytest
 from alembic import command
@@ -58,9 +56,38 @@ def postgres():
                 if time.monotonic() > deadline:
                     raise
                 time.sleep(0.2)
+        with psycopg.connect(url, autocommit=True) as connection:
+            # Cluster-wide roles; the migration only creates ones that are missing.
+            connection.execute("CREATE ROLE brief_migrator NOLOGIN NOBYPASSRLS")
+            connection.execute("CREATE ROLE brief_runtime LOGIN NOBYPASSRLS")
+            connection.execute("CREATE ROLE brief_admin LOGIN NOBYPASSRLS")
         yield url
     finally:
         subprocess.run([docker, "stop", container], check=True, capture_output=True)  # noqa: S603
+
+
+def role_url(url, role):
+    return url.replace("postgres@", role + "@", 1)
+
+
+def super_url(url):
+    return url
+
+
+def make_settings(superuser_url, **overrides):
+    values = {
+        "app_env": "local",
+        "database_url": role_url(superuser_url, "brief_runtime"),
+        "admin_database_url": role_url(superuser_url, "brief_admin"),
+        "internal_service_token": secrets.token_urlsafe(32),
+        "owner_user_id": OWNER,
+        "webauthn_rp_id": "localhost",
+        "webauthn_origins": ("http://localhost:5173",),
+        "rate_limit_key": secrets.token_urlsafe(32),
+        "compose_project_name": "test",
+        **overrides,
+    }
+    return Settings(**values)
 
 
 @pytest.fixture
@@ -72,6 +99,7 @@ def database_url(postgres, monkeypatch):
         )
     url = postgres.rsplit("/", 1)[0] + "/" + name
     monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
     try:
         config = Config(str(Path(__file__).resolve().parents[2] / "db/alembic.ini"))
         command.upgrade(config, "head")
@@ -85,37 +113,46 @@ def database_url(postgres, monkeypatch):
             )
 
 
-def token(settings, user_id=OWNER, email="owner@example.com", **overrides):
-    now = datetime.now(UTC)
-    claims = {
-        "sub": str(user_id),
-        "email": email,
-        "role": "authenticated",
-        "aud": "authenticated",
-        "iss": "daily-brief-local",
-        "iat": now,
-        "exp": now + timedelta(minutes=10),
-        **overrides,
-    }
-    return jwt.encode(claims, settings.dev_jwt_secret, algorithm="HS256")
+DEFAULT = object()
 
 
 class Client:
-    """Assert EVERY integration HTTP response against the authoritative contract."""
+    """A browser: keeps its own cookies and asserts every response against the contract."""
 
-    def __init__(self, raw, settings):
+    def __init__(self, raw, settings, cookies=None):
         self.raw = raw
         self.settings = settings
+        self.cookies = dict(cookies or {})
         self.operations = set()
 
-    async def request(self, method, path, **kwargs):
-        headers = kwargs.pop("headers", {"Authorization": "Bearer " + token(self.settings)})
+    def remember(self, response):
+        for header in response.headers.get_list("set-cookie"):
+            name, _, rest = header.partition("=")
+            value, _, attrs = rest.partition(";")
+            if "max-age=0" in attrs.lower().replace(" ", ""):
+                self.cookies.pop(name, None)
+            else:
+                self.cookies[name] = value
+
+    async def request(self, method, path, *, headers=None, origin=DEFAULT, contract=True, **kwargs):
+        headers = dict(headers or {})
+        if method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and origin is not None:
+            headers["Origin"] = self.settings.webauthn_origins[0] if origin is DEFAULT else origin
+        # The worker is not a browser: it never carries cookies to /internal.
+        if self.cookies and "Cookie" not in headers and not path.startswith("/internal"):
+            headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
         response = await self.raw.request(method, "/api" + path, headers=headers, **kwargs)
+        self.remember(response)
+        assert response.headers.get("cache-control") == "no-store", (method, path)
         clean_path = path.split("?", 1)[0]
         for template, methods in SPEC["paths"].items():
             if re.fullmatch(re.sub(r"\{[^}]+\}", "[^/]+", template), clean_path):
-                operation = methods[method.lower()]
+                operation = methods.get(method.lower())
+                if operation is None:
+                    break
                 self.operations.add(operation["operationId"])
+                if not contract:
+                    return response
                 declared = operation["responses"].get(str(response.status_code))
                 assert declared is not None, (method, path, response.status_code, response.text)
                 if "$ref" in declared:
@@ -128,6 +165,8 @@ class Client:
                 else:
                     assert response.content == b""
                 return response
+        if not contract:
+            return response
         raise AssertionError(f"No contract route: {method} {path}")
 
     async def get(self, path, **kwargs):
@@ -148,28 +187,52 @@ class Client:
 
 @pytest.fixture
 async def env(database_url):
-    settings = Settings(
-        database_url=database_url,
-        dev_jwt_secret=secrets.token_urlsafe(32),
-        internal_service_token=secrets.token_urlsafe(32),
-        owner_user_id=OWNER,
-    )
+    settings = make_settings(database_url)
     app = create_app(settings)
     database = Database(settings)
-    async with database.transaction() as db:
-        await db.execute("INSERT INTO allowed_emails (email) VALUES ('owner@example.com')")
+    superdb = Database(settings, super_url(database_url))
+    admindb = Database(settings, settings.admin_database_url)
+    async with superdb.transaction() as db:
+        await db.execute(
+            "INSERT INTO profiles (user_id, display_name) VALUES (%s, 'Owner')", (OWNER,)
+        )
+        await db.execute("INSERT INTO agent_settings (user_id) VALUES (%s)", (OWNER,))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as raw:
-        client = Client(raw, settings)
+
+        async def as_user(user_id):
+            """A client signed in with a local dev session (no passkey ceremony)."""
+            cookie = await dev_session(superdb, settings, user_id)
+            return Client(raw, settings, {settings.session_cookie: cookie})
+
+        def browser():
+            return Client(raw, settings)
+
+        client = await as_user(OWNER)
         assert (await client.get("/v1/me")).status_code == 200
         yield {
             "settings": settings,
             "app": app,
             "database": database,
+            "super": superdb,
+            "admin": admindb,
             "client": client,
+            "as_user": as_user,
+            "browser": browser,
+            "raw": raw,
             "internal": {"X-Internal-Token": settings.internal_service_token},
         }
+
+
+async def dev_session(database, settings, user_id):
+    from app import clock
+    from app.authdb import create_session, lock_sessions
+
+    async with database.transaction() as db:
+        await lock_sessions(db, user_id)
+        value, _id, _age = await create_session(db, user_id, None, clock.now(), kind="dev")
+    return value
 
 
 async def subscribe(env, title="Technology", **kwargs):

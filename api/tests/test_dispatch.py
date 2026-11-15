@@ -12,7 +12,9 @@ from app.dispatch import GitHubDispatcher, LocalDispatcher
 @pytest.mark.parametrize("status", [200, 204])
 async def test_github_dispatch_request(status):
     settings = Settings(
-        github_repository="example/brief", github_dispatch_token=secrets.token_urlsafe(32)
+        app_env="local",
+        github_repository="example/brief",
+        github_dispatch_token=secrets.token_urlsafe(32),
     )
     response = httpx.Response(status, request=httpx.Request("POST", "https://api.github.com"))
     post = AsyncMock(return_value=response)
@@ -30,7 +32,9 @@ async def test_github_dispatch_request(status):
 
 async def test_github_dispatch_failure_does_not_echo_credentials():
     settings = Settings(
-        github_repository="example/brief", github_dispatch_token=secrets.token_urlsafe(32)
+        app_env="local",
+        github_repository="example/brief",
+        github_dispatch_token=secrets.token_urlsafe(32),
     )
     response = httpx.Response(
         403,
@@ -43,7 +47,7 @@ async def test_github_dispatch_failure_does_not_echo_credentials():
 
 
 async def test_local_real_runner_without_command_defers_to_host_worker(caplog):
-    settings = Settings(agent_runner="claude_subscription")
+    settings = Settings(app_env="local", agent_runner="claude_subscription")
     queue = AsyncMock()
     with caplog.at_level(logging.INFO):
         await LocalDispatcher(settings, queue).dispatch()

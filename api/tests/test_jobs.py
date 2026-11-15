@@ -3,7 +3,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
-from conftest import claim, queued_job, result_for, subscribe, token
+from conftest import claim, queued_job, result_for, subscribe
 from psycopg import sql
 
 from app import reports
@@ -66,15 +66,13 @@ async def test_report_pipeline_and_persistent_marks(env):
         ] == "succeeded"
         assert (await db.one("SELECT count(*) AS n FROM usage_logs"))["n"] == 1
     other = uuid4()
-    async with env["database"].transaction() as db:
-        await db.execute("INSERT INTO allowed_emails (email) VALUES ('other@example.com')")
-    headers = {"Authorization": "Bearer " + token(env["settings"], other, "other@example.com")}
-    assert (await client.get("/v1/reports", headers=headers)).json()["reports"] == []
-    assert (await client.get(f"/v1/reports/{report_id}", headers=headers)).status_code == 404
+    async with env["super"].transaction() as db:
+        await db.execute("INSERT INTO profiles (user_id) VALUES (%s)", (other,))
+    stranger = await env["as_user"](other)
+    assert (await stranger.get("/v1/reports")).json()["reports"] == []
+    assert (await stranger.get(f"/v1/reports/{report_id}")).status_code == 404
     assert (
-        await client.put(
-            f"/v1/items/{item['id']}/mark", headers=headers, json={"read": True, "note": None}
-        )
+        await stranger.put(f"/v1/items/{item['id']}/mark", json={"read": True, "note": None})
     ).status_code == 404
 
 
@@ -230,7 +228,7 @@ async def test_owner_only_at_claim_and_result(env):
     other = uuid4()
     async with env["database"].transaction() as db:
         await db.execute(
-            "INSERT INTO profiles (user_id,email,status) VALUES (%s,'other@example.com','active')",
+            "INSERT INTO profiles (user_id,status) VALUES (%s,'active')",
             (other,),
         )
     job = await queued_job(env, user_id=other)

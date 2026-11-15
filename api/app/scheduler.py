@@ -1,10 +1,11 @@
 """EventBridge handler and reusable async tick. Scheduling has no HTTP route."""
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from app import jobs, profiles, slots, subscriptions
+from app import cleanup, jobs, profiles, slots, subscriptions
 from app.config import Settings
 from app.database import Database
 from app.dispatch import configured_dispatcher
@@ -18,7 +19,7 @@ async def tick(database, settings, dispatcher, now=None):
     created = 0
     async with database.transaction() as db:
         await jobs.recover_leases(db, now)
-        for user in await profiles.scheduler_users(db):
+        for user in await profiles.scheduler_users(db, local=settings.local):
             if await jobs.has_active_job(db, user["user_id"], manual_only=True):
                 continue
             zone = ZoneInfo(user["timezone"])
@@ -45,6 +46,11 @@ async def tick(database, settings, dispatcher, now=None):
         pending = await jobs.has_pending(db, now)
     # Commit before dispatch: failed dispatch remains queued and is retried next tick,
     # including when no NEW jobs are inserted. Worker claim handles duplicate dispatches.
+    try:
+        await cleanup.run(database, now)
+    except Exception:
+        # Housekeeping must never block scheduling; error text may hold connection details.
+        logging.getLogger(__name__).warning("Auth cleanup failed; retrying on next tick")
     if pending:
         await dispatcher.dispatch()
     return {"created": created, "dispatched": pending}

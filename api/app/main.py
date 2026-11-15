@@ -4,12 +4,13 @@ from mangum import Mangum
 from psycopg import IntegrityError, OperationalError
 from starlette.exceptions import HTTPException
 
-from app import jobs, marks, profiles, reports, slots, subscriptions, topics
-from app.auth import DevVerifier, SupabaseVerifier
+from app import jobs, marks, passkeys, profiles, reports, slots, subscriptions, topics
+from app.auth import SessionAuthenticator
 from app.config import Settings
 from app.contract import SPEC
 from app.database import Database
 from app.dispatch import configured_dispatcher
+from app.guard import RequestGuard
 from app.problems import Problem, problem_response
 
 
@@ -19,15 +20,14 @@ def create_app(settings=None):
     app.openapi = lambda: SPEC
     app.state.settings = settings
     app.state.database = Database(settings)
-    app.state.verifier = (
-        DevVerifier(settings) if settings.auth_verifier == "dev" else SupabaseVerifier(settings)
-    )
+    app.state.authenticator = SessionAuthenticator(settings, app.state.database)
+    app.add_middleware(RequestGuard, settings=settings)
     app.state.queue = jobs.PostgresJobQueue(app.state.database, settings)
     app.state.dispatcher = configured_dispatcher(settings, app.state.queue)
 
     @app.exception_handler(Problem)
     async def handle_problem(request, exc):
-        return problem_response(exc.status, exc.code, exc.detail)
+        return problem_response(exc.status, exc.code, exc.detail, exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation(request, exc):
@@ -55,6 +55,7 @@ def create_app(settings=None):
 
     for router in (
         profiles.router,
+        passkeys.router,
         topics.router,
         subscriptions.router,
         slots.router,
@@ -67,5 +68,27 @@ def create_app(settings=None):
     return app
 
 
-app = create_app()
-handler = Mangum(app, lifespan="off")
+_app = None
+_handler = None
+
+
+def get_app():
+    """Built on first use: importing this module must not require a full environment."""
+    global _app
+    if _app is None:
+        _app = create_app()
+    return _app
+
+
+def __getattr__(name):
+    # `uvicorn app.main:app` resolves the ASGI app lazily.
+    if name == "app":
+        return get_app()
+    raise AttributeError(name)
+
+
+def handler(event, context):
+    global _handler
+    if _handler is None:
+        _handler = Mangum(get_app(), lifespan="off")
+    return _handler(event, context)

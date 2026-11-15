@@ -1,37 +1,34 @@
-from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from conftest import OWNER, token
+from conftest import OWNER
 
 
-async def test_profile_gate_and_invite(env):
-    client = env["client"]
-    pending = uuid4()
-    headers = {"Authorization": "Bearer " + token(env["settings"], pending, "pending@example.com")}
-    response = await client.get("/v1/me", headers=headers)
-    assert response.json()["status"] == "pending"
-    for method, path, data in [("GET", "/v1/topics", None), ("PATCH", "/v1/me", {"bio": "test"})]:
-        response = await client.request(
-            method, path, headers=headers, **({"json": data} if data else {})
-        )
-        assert response.status_code == 403
-        assert response.json()["code"] == "account_pending"
-    async with env["database"].transaction() as db:
-        await db.execute("INSERT INTO invite_codes (code,max_uses) VALUES ('EXAMPLE-CODE',1)")
-    response = await client.post(
-        "/v1/auth/redeem-invite", headers=headers, json={"code": "EXAMPLE-CODE"}
-    )
-    assert response.json()["status"] == "active"
-    response = await client.post(
-        "/v1/auth/redeem-invite", headers=headers, json={"code": "EXAMPLE-CODE"}
-    )
-    assert response.json()["code"] == "already_active"
-    async with env["database"].transaction() as db:
-        assert (await db.one("SELECT used_count FROM invite_codes"))["used_count"] == 1
-        await db.execute("UPDATE profiles SET status='disabled' WHERE user_id=%s", (pending,))
+async def test_profile_is_never_created_by_a_read(env):
+    """AUTH-1: a valid session for a user without a profile row gets 401 and creates nothing."""
+    ghost = uuid4()
+    async with env["super"].transaction() as db:
+        await db.execute("INSERT INTO profiles (user_id) VALUES (%s)", (ghost,))
+    client = await env["as_user"](ghost)
+    async with env["super"].transaction() as db:
+        await db.execute("DELETE FROM profiles WHERE user_id=%s", (ghost,))
+    assert (await client.get("/v1/me", contract=False)).status_code == 401
+    async with env["super"].transaction() as db:
+        assert (await db.one("SELECT count(*) AS n FROM profiles WHERE user_id=%s", (ghost,)))[
+            "n"
+        ] == 0
+
+
+async def test_disabled_profile_cannot_use_v1(env):
+    other = uuid4()
+    async with env["super"].transaction() as db:
+        await db.execute("INSERT INTO profiles (user_id) VALUES (%s)", (other,))
+    client = await env["as_user"](other)
+    assert (await client.get("/v1/me")).json()["status"] == "active"
+    async with env["super"].transaction() as db:
+        await db.execute("UPDATE profiles SET status='disabled' WHERE user_id=%s", (other,))
     for path in ["/v1/me", "/v1/topics"]:
-        assert (await client.get(path, headers=headers)).json()["code"] == "account_disabled"
+        assert (await client.get(path)).json()["code"] == "unauthorized"
 
 
 async def test_crud_and_stable_slot_replacement(env):
@@ -120,35 +117,24 @@ async def test_strict_request_validation(env, payload):
     assert (await env["client"].post("/v1/topics", json=payload)).status_code == 422
 
 
-async def test_wrong_credentials_and_expired_jwt(env):
-    client = env["client"]
+async def test_wrong_credentials_are_rejected(env):
+    anonymous = env["browser"]()
+    for headers in [{}, env["internal"], {"Authorization": "Bearer invalid"}]:
+        response = await anonymous.get("/v1/me", headers=headers, contract=False)
+        assert response.status_code == 401
     for headers in [
         {},
-        env["internal"],
-        {"Authorization": "Bearer invalid"},
-        {
-            "Authorization": "Bearer "
-            + token(env["settings"], exp=datetime.now(UTC) - timedelta(seconds=1))
-        },
-    ]:
-        assert (await client.get("/v1/me", headers=headers)).status_code == 401
-    for headers in [
-        {},
-        {"Authorization": "Bearer " + token(env["settings"])},
-        {**env["internal"], "Authorization": "Bearer " + token(env["settings"])},
+        {"Authorization": "Bearer abc"},
+        {**env["internal"], "Authorization": "Bearer abc"},
+        {**env["internal"], "Cookie": env["settings"].session_cookie + "=abc"},
     ]:
         assert (
-            await client.post(
+            await anonymous.post(
                 "/internal/jobs/claim", headers=headers, json={"worker_id": "example"}
             )
         ).status_code == 401
-    response = await client.post(
-        "/v1/topics",
-        content="{",
-        headers={
-            "Authorization": "Bearer " + token(env["settings"]),
-            "Content-Type": "application/json",
-        },
+    response = await env["client"].post(
+        "/v1/topics", content="{", headers={"Content-Type": "application/json"}
     )
     assert response.status_code == 400
 
@@ -158,11 +144,11 @@ async def test_topics_subscriptions_are_private(env):
     topic = (await client.post("/v1/topics", json={"title": "Owner topic"})).json()
     sub = (await client.post("/v1/subscriptions", json={"topic_id": topic["id"]})).json()
     other = uuid4()
-    async with env["database"].transaction() as db:
-        await db.execute("INSERT INTO allowed_emails (email) VALUES ('other@example.com')")
-    headers = {"Authorization": "Bearer " + token(env["settings"], other, "other@example.com")}
-    assert (await client.get("/v1/topics", headers=headers)).json()["topics"] == []
-    assert (await client.get("/v1/subscriptions", headers=headers)).json()["subscriptions"] == []
+    async with env["super"].transaction() as db:
+        await db.execute("INSERT INTO profiles (user_id) VALUES (%s)", (other,))
+    stranger = await env["as_user"](other)
+    assert (await stranger.get("/v1/topics")).json()["topics"] == []
+    assert (await stranger.get("/v1/subscriptions")).json()["subscriptions"] == []
     for method, path, data in [
         ("PATCH", f"/v1/topics/{topic['id']}", {"title": "hijack"}),
         ("DELETE", f"/v1/topics/{topic['id']}", None),
@@ -171,5 +157,5 @@ async def test_topics_subscriptions_are_private(env):
         ("DELETE", f"/v1/subscriptions/{sub['id']}", None),
     ]:
         assert (
-            await client.request(method, path, headers=headers, **({"json": data} if data else {}))
+            await stranger.request(method, path, **({"json": data} if data else {}))
         ).status_code == 404
