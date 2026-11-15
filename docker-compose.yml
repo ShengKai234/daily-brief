@@ -24,7 +24,6 @@ services:
 
   # Runs Alembic migrations (default) or seed data (`seed` argument), then exits.
   migrate:
-    profiles: ["todo-db"]
     build: ./db
     env_file: .env
     depends_on:
