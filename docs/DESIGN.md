@@ -11,7 +11,7 @@ At the times a user configures each day, an AI agent searches the news for the t
 
 - One user: Kai. The agent runs on Kai's personal Claude plan, using a Sonnet model.
 - Web app (PWA).
-- Google sign-in with restricted registration (email allowlist or invite code).
+- Passkey sign-in (WebAuthn) with invite-only registration; no passwords, email or social login (see 3.4).
 - Topic subscriptions, item count per topic, delivery slots (at most 3 per user per day).
 - Read state, notes, profile.
 
@@ -19,7 +19,7 @@ At the times a user configures each day, an AI agent searches the news for the t
 
 - Other users. Once anyone else is onboarded, the agent must run on an API key (see 3.1).
 - Native iOS app (Swift). The backend stays a pure API with no web-only assumptions.
-- Apple sign-in (added before the app opens to external testers).
+- Native-app passkey sign-in (same RP ID; its session transport needs its own contract).
 - Community discussion and public report browsing.
 - Commercialization (billing, quota plans).
 
@@ -32,7 +32,7 @@ Sub agents cannot create accounts or approve billing. Store every secret in a pa
 - The local tools in 2.2, with `gh` authenticated (`gh auth status`).
 - The three agent CLIs signed in.
 
-The GitHub repo does not exist yet. The lead agent creates it with `gh` during bootstrap (see 10.3). Everything in the 2.1 table from row 3 onward (AWS, Supabase, Google OAuth, subdomain, worker credential) is needed only before M2, the first cloud deployment. Rows 1 and 2 are handled as noted.
+The GitHub repo does not exist yet. The lead agent creates it with `gh` during bootstrap (see 10.3). Everything in the 2.1 table from row 3 onward (AWS, Supabase, subdomain, worker credential, owner identity) is needed only before M2, the first cloud deployment. Rows 1 and 2 are handled as noted.
 
 ### 2.1 Accounts and setup
 
@@ -41,11 +41,11 @@ The GitHub repo does not exist yet. The lead agent creates it with `gh` during b
 | 1 | **GitHub repo** | Created by the lead agent with `gh` after Kai confirms the name (see 10.3). Kai then checks that secret scanning and push protection are on and protects the default branch. | Repo name |
 | 2 | **GitHub token for workflow dispatch** | Create a fine-grained personal access token limited to this repo with the minimum permission needed to trigger a workflow (scope to verify, section 11 item 6). | Token, stored later in AWS |
 | 3 | **AWS (existing personal account)** | Confirm MFA on the root user. Create a deploy identity for Terraform (IAM role or user, not root). Create a budget alert. Pick the region (Tokyo, `ap-northeast-1`, recommended). | Account ID, region, deploy credentials configured locally |
-| 4 | **Supabase** | Sign up, enable two-step verification, create one project in the same region as AWS. Save the database password. | Project URL, public key, service role key, database connection string |
-| 5 | **Google OAuth** | In Google Cloud Console: create a project, configure the OAuth consent screen (testing mode is enough; add your own Google account as a test user), create an OAuth client of type "Web application". Set the redirect URI to the callback URL shown on Supabase's Google provider page. Then paste the client ID and secret into Supabase's Google provider settings. | Nothing for agents; it lives in Supabase |
+| 4 | **Supabase (database only)** | Sign up, enable two-step verification, create one project in the same region as AWS. Save the database password. Turn off the Data API. Create the database roles `brief_migrator`, `brief_runtime`, `brief_admin` (see `docs/auth-passkey-design.md` 4.4). Supabase Auth is not used. | Runtime and admin connection strings |
+| 5 | *(removed)* | Google OAuth is no longer used (3.4). | — |
 | 6 | **Subdomain** | Decide the hostname (for example `brief.<your-domain>`). Make sure you can add DNS records: one CNAME to CloudFront and the validation records for the ACM certificate. | Hostname, DNS provider |
 | 7 | **Claude plan credentials for the worker** | Confirm the plan is active. Generate the long-lived credential used for headless Claude Code runs (exact procedure to verify, section 11 item 5). | Credential, stored in GitHub Actions secrets |
-| 8 | **Owner identity** | Decide the Google account email that is the owner and the first allowlisted user. | Email, supplied as an environment variable, never committed |
+| 8 | **Owner identity** | No email is needed. The owner is `OWNER_USER_ID`; Kai creates the owner and registers the first passkey with `auth_admin bootstrap-owner` (3.4). Decide the RP ID host (the app hostname from row 6) before the first production passkey; it cannot change later without re-registering every passkey. | `OWNER_USER_ID`, RP ID host |
 
 ### 2.2 Local tools
 
@@ -55,12 +55,15 @@ Python 3.12 or newer, `uv`, Node.js LTS, Terraform, AWS CLI, GitHub CLI (`gh`), 
 
 | Secret | Location |
 |---|---|
-| Supabase service role key, database connection string | AWS (Lambda environment or Secrets Manager / SSM Parameter Store) |
+| Runtime database connection string (`brief_runtime`) | AWS (Lambda environment or Secrets Manager / SSM Parameter Store) |
+| Admin database connection string (`brief_admin`) | Kai's password manager only; used by the `auth_admin` CLI |
+| `RATE_LIMIT_KEY` (HMAC key for client-IP buckets) | AWS |
 | Internal service token (worker ↔ API) | AWS and GitHub Actions secrets |
 | GitHub dispatch token | AWS |
 | Claude plan credential | GitHub Actions secrets |
-| Owner email | AWS (environment variable) |
-| Supabase public key, project URL | Frontend build configuration (these are public by design) |
+| `OWNER_USER_ID`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS` | AWS environment variables (not secret) |
+
+The frontend build holds no keys or secrets.
 
 ### 2.4 Not needed yet
 
@@ -77,7 +80,7 @@ The design targets free tiers, but nothing here guarantees zero cost. Free allow
 | Backend | Python, FastAPI, async throughout |
 | Frontend | React + TypeScript (Vite), PWA |
 | Database | Postgres (Supabase free plan) |
-| Sign-in | Supabase Auth (Google). The backend only verifies JWTs |
+| Sign-in | Self-hosted WebAuthn passkeys (`py_webauthn`), opaque session cookie checked in the database, invite-only registration (see 3.4) |
 | API runtime | AWS Lambda + Function URL (Kai's existing personal account) |
 | Scheduling | EventBridge triggers a Lambda on a fixed interval |
 | Queue | Postgres `jobs` table behind an interface (replaceable with SQS) |
@@ -114,6 +117,20 @@ The first version of the web app is deliberately plain. Visual style is discusse
 - Spend the effort on structure instead: routing, data loading, error and empty states, forms, accessibility (labels, focus states, keyboard use), and phone-width layout.
 - The web agent must not make style decisions beyond this baseline. Style ideas go to `HANDOFFS.md` addressed to Kai.
 
+### 3.4 Authentication (passkey-only, invite-only)
+
+Full design, invariants AUTH-1 to AUTH-16, schema, API and BDD scenarios: `docs/auth-passkey-design.md` (v0.3, approved 2026-11-15). That document is normative; this section is the summary.
+
+- **Authority:** our API. No Supabase Auth, no Google OAuth, no email or SMS. Supabase is only the Postgres host.
+- **Sign-in:** passkeys only, `userVerification: required`, discoverable credentials. Cross-device sign-in uses the browser's built-in FIDO hybrid flow (the browser shows the QR code). No custom QR login or QR enrollment.
+- **Admission:** a profile is created only by redeeming a single-use, expiring invite token. Signing in never creates a profile or changes its status. The owner is created by the `auth_admin bootstrap-owner` CLI, never by a public endpoint.
+- **Non-owner gate (3.1):** `NON_OWNER_ADMISSION=false` until `AnthropicApiRunner` is complete and Kai approves. It is checked when a token is issued and again at registration options and verify, including non-owner recovery. Invited users get `agent_settings.runner = 'anthropic_api'`.
+- **Sessions:** random token in a host-only `HttpOnly`, `Secure`, `SameSite=Strict` cookie; the database stores only its SHA-256. Every request checks the session, its passkey and `profiles.status`. Idle 30 days, absolute 90 days, no refresh tokens, revocation is immediate. Sensitive actions need a reauthentication within 5 minutes.
+- **CSRF:** every unsafe `/api/v1` request needs exactly one `Origin` equal to a configured origin, and JSON bodies only. `/api/internal` is exempt and accepts only the service token.
+- **Recovery:** at least two passkeys or synced passkeys. If all are lost, the owner verifies the person out of band and issues a one-hour recovery link that replaces every old passkey and session; issuing a new link revokes older ones. Kai uses the CLI for himself.
+- **RP ID:** the exact app hostname (for example `brief.<domain>`), from configuration, never from request headers.
+- **Environment:** `APP_ENV` is required (`local` or `production`). Only `local` allows non-`Secure` cookies and `kind='dev'` sessions created by `auth_admin dev-session`.
+
 ## 4. Architecture
 
 ### 4.1 Components
@@ -122,13 +139,17 @@ The first version of the web app is deliberately plain. Visual style is discusse
 [Browser PWA] ──► [CloudFront: default path → S3 static files; /api/* → Function URL] ──► [Lambda: FastAPI]
                                                                                               │
                                                                                               ▼
-                                                                                [Supabase Postgres + Auth]
+                                                                                [Supabase Postgres]      
                                                                                               ▲
 [EventBridge every 15 min] ──► [Lambda: scheduler tick] ──────────────────────────────────────┤
                                      │ dispatch only when a job is due                         │
                                      ▼                                                         │
                        [GitHub Actions: agent worker] ── writes back through the internal API ─┘
+
+[Kai's machine: auth_admin CLI] ── admin DB role, TLS ──► owner bootstrap, invites, recovery
 ```
+
+The browser talks only to `/api/*` on the same origin. Sign-in endpoints are `/api/v1/auth/*` (3.4).
 
 ### 4.2 Flow of one report
 
@@ -148,21 +169,20 @@ With one or two users, free-tier limits and a single developer, microservices on
 
 - Modules call each other only through service interfaces; no cross-module table access.
 - There are three deployable units: `api` (including the scheduler handler), `worker`, `web`.
-- Every replaceable point sits behind an interface: `AgentRunner`, `JobQueue`, `AuthVerifier`, `WorkerDispatcher`.
+- Every replaceable point sits behind an interface: `AgentRunner`, `JobQueue`, `SessionAuthenticator`, `WorkerDispatcher`.
 
 ### 4.4 Replaceability
 
 | Now | Later | What changes |
 |---|---|---|
-| Kai's subdomain | Production domain | Environment variables, DNS records, CloudFront alias and ACM certificate, OAuth callback URLs |
+| Kai's subdomain | Production domain | Environment variables, DNS records, CloudFront alias and ACM certificate. **Passkeys are bound to the RP ID (the hostname): changing it requires every user to register a new passkey** |
 | Supabase Postgres | RDS, Neon | Connection string (use standard Postgres features only) |
-| Supabase Auth | Cognito, Auth0 | `AuthVerifier` implementation and JWKS configuration |
 | `jobs` table | SQS | `JobQueue` implementation |
 | GitHub Actions worker | Lambda or a long-running worker | `WorkerDispatcher` implementation |
 | Claude subscription | Anthropic API key | `AgentRunner` implementation |
 | Lambda | Cloud Run or another container platform | Deployment configuration (keep a Dockerfile maintained) |
 
-Rule: **do not use Supabase-specific data access.** The frontend never queries tables directly and business logic never lives in RLS. The frontend uses Supabase only to sign in and obtain a JWT; everything else goes through our API. RLS is still enabled as a second line of defense.
+Rule: **do not use Supabase-specific data access.** The frontend never talks to Supabase; the Data API is turned off and everything goes through our API. Business logic never lives in RLS. RLS is still enabled as a second line of defense: no policies for client roles (`PUBLIC`, `anon`, `authenticated`), policies only for the backend roles `brief_runtime` and `brief_admin` (`docs/auth-passkey-design.md` 4.4).
 
 ### 4.5 Local development environment (OrbStack, Docker)
 
@@ -184,22 +204,23 @@ The worker is not a long-running service. It runs on demand, either in a contain
 
 | Interface | Local implementation | Production implementation |
 |---|---|---|
-| `AuthVerifier` | Dev verifier: accepts tokens signed by a local dev key; a dev sign-in page issues one for the seeded owner | Supabase JWT verification |
+| `SessionAuthenticator` | Same session-cookie check as production. Real passkeys work on `localhost`; for scripts and curl, `auth_admin dev-session` creates a `kind='dev'` session for the seeded owner | Session-cookie check; `kind='dev'` sessions are rejected |
 | `JobQueue` | Postgres `jobs` table (same as production) | Postgres `jobs` table, later SQS |
 | `WorkerDispatcher` | Starts the worker process locally | GitHub `workflow_dispatch` |
 | `AgentRunner` | `StubRunner` returning fixed, schema-valid results for tests; the real subscription runner on the host when Kai wants a true end-to-end run | `ClaudeSubscriptionRunner` |
 
 **Rules**
 
-- The implementation is chosen by environment variables. `APP_ENV=local` enables the dev verifier.
-- The dev verifier must be impossible to enable in production: the API refuses to start if dev auth is on while `APP_ENV` is not `local`, and a test covers this.
+- The implementation is chosen by environment variables. `APP_ENV` is required (`local` or `production`); the API and CLI refuse to start without it.
+- Dev sessions must be impossible to use in production: the authenticator rejects `kind='dev'` sessions unless `APP_ENV=local`, the `dev-session` CLI command runs only locally, and tests cover both.
+- Each worktree sets `WEBAUTHN_RP_ID=localhost` and `WEBAUTHN_ORIGINS=http://localhost:<WEB_PORT>`; local cookie names carry the compose project name so the worktrees do not sign each other out.
 - The `api` Dockerfile is the one used for deployment later. Keep it production-shaped; development conveniences (reload, mounted source) come from compose overrides.
 - A `Makefile` gives one-word entry points: `make up`, `make down`, `make migrate`, `make seed`, `make test`, `make lint`, `make logs`.
 - `.env.example` lists every variable with placeholder values. The real `.env` is git-ignored.
 - Each agent worktree runs its own compose project name and port offsets so parallel stacks do not collide. The lead agent defines the convention in `AGENTS.md`.
 - Tests that need a database use the compose `db` or a throwaway container, never a cloud database.
 
-**Definition of "works locally" (M1)**: from a fresh clone, `make up` brings the stack up; the dev sign-in works; a job created by the scheduler is processed by the worker with the stub runner; the report appears in the web app; read state and notes persist across restarts.
+**Definition of "works locally" (M1)**: from a fresh clone, `make up` brings the stack up; registering a passkey and signing in work on `localhost` (automated with a virtual authenticator, plus a manual Touch ID check); a job created by the scheduler is processed by the worker with the stub runner; the report appears in the web app; read state and notes persist across restarts.
 
 ## 5. Data model
 
@@ -207,10 +228,12 @@ All tables use UUID primary keys and `timestamptz`, and carry `created_at` and `
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `profiles` | `user_id` PK, `display_name`, `avatar_url`, `bio`, `timezone` (default Asia/Taipei), `locale` (default zh-TW), `status` (pending / active / disabled) | Maps to the auth user. Community features extend from here |
-| `allowed_emails` | `email` PK, `note` | Registration allowlist |
-| `invite_codes` | `code` PK, `max_uses`, `used_count`, `expires_at`, `created_by` | Invite codes |
-| `invite_redemptions` | `code`, `user_id`, `redeemed_at` | Redemption log |
+| `profiles` | `user_id` PK, `display_name`, `avatar_url`, `bio`, `timezone` (default Asia/Taipei), `locale` (default zh-TW), `status` (active / disabled) | The application user. No email. `user_id` is also the WebAuthn user handle. Community features extend from here |
+| `enrollment_tokens` | `id`, `token_hash`, `purpose` (invite / recovery / add_credential), `user_id`, `options_count`, `expires_at`, `used_at`, `revoked_at` | Single-use registration grants; only the hash is stored |
+| `passkey_credentials` | `id`, `user_id`, `credential_id` (unique), `public_key`, `sign_count`, `backup_eligible`, `backup_state`, `revoked_at` | Passkeys; revoked rows are kept forever so a credential id can never be reused |
+| `auth_sessions` | `id`, `user_id`, `token_hash`, `kind` (passkey / dev), `credential_id`, `reauth_at`, `idle_expires_at`, `absolute_expires_at`, `revoked_at` | Server-side sessions |
+| `webauthn_ceremonies` | `id`, `purpose`, `challenge`, `browser_binding_hash`, bindings, `expires_at`, `consumed_at` | One registration or sign-in ceremony, 5 minutes, single use |
+| `auth_rate_limits`, `auth_events` | bucket counters; audit events without secrets | Abuse limits and audit |
 | `topics` | `id`, `owner_id`, `title`, `normalized_key`, `visibility` (private / public) | Free-text topic entered by the user. `normalized_key` allows shared lookups later |
 | `subscriptions` | `id`, `user_id`, `topic_id`, `item_count` (1–10, default 3), `position`, `enabled` | Who subscribes to what, how many items, display order |
 | `delivery_slots` | `id`, `user_id`, `local_time` (30-minute steps), `enabled` | At most 3 per user, enforced by both the API and a database constraint |
@@ -227,15 +250,20 @@ Principles:
 - Content (reports, items) is separate from personal state (item_marks).
 - The `visibility` column exists from day one and defaults to private; POC endpoints return only the caller's own data.
 - Community features (comments, follows) will add tables, not change existing ones.
+- Exact DDL for the auth tables, constraints, retention and the role and policy matrix: `docs/auth-passkey-design.md` sections 4 and 10; `contracts/schema.sql` is the contract.
 
 ## 6. API (`/api/v1`)
 
-Every public endpoint requires a Supabase JWT and `profiles.status = active`.
+Every `/v1` endpoint requires a valid session cookie and `profiles.status = active`, except the four public sign-in endpoints below. Unsafe methods also require the exact `Origin` (3.4).
 
 | Method and path | Purpose |
 |---|---|
 | `GET /me`, `PATCH /me` | Read and update the profile |
-| `POST /auth/redeem-invite` | Redeem an invite code; moves a pending account to active |
+| `POST /auth/registration/options`, `POST /auth/registration/verify` | Public. Register a passkey with an enrollment token (invite, recovery, add credential) |
+| `POST /auth/login/options`, `POST /auth/login/verify` | Public. Sign in with a passkey |
+| `POST /auth/logout`, `POST /auth/reauth/options`, `POST /auth/reauth/verify` | Sign out; reauthenticate for sensitive actions |
+| `GET /me/passkeys`, `POST /me/passkeys/options`, `POST /me/passkeys/verify`, `DELETE /me/passkeys/{id}` | List, add and remove passkeys (add and remove need a recent reauth) |
+| `GET /me/sessions`, `DELETE /me/sessions/{id}` | List and revoke signed-in devices |
 | `GET/POST /topics`, `PATCH/DELETE /topics/{id}` | Manage topics |
 | `GET/POST /subscriptions`, `PATCH/DELETE /subscriptions/{id}` | Subscriptions, item counts, order |
 | `GET/PUT /delivery-slots` | Submit the full set of slots at once; the backend enforces the limit of 3 |
@@ -243,7 +271,7 @@ Every public endpoint requires a Supabase JWT and `profiles.status = active`.
 | `PUT /items/{id}/mark` | Set read state and note |
 | `GET/PATCH /agent-settings` | Display only in the POC; fields are reserved |
 
-Internal endpoints (`/internal`, authenticated with a separate service token; user JWTs are rejected):
+Internal endpoints (`/internal`, authenticated with a separate service token; session cookies are rejected; no `Origin` check):
 
 | Method and path | Purpose |
 |---|---|
@@ -253,7 +281,7 @@ Internal endpoints (`/internal`, authenticated with a separate service token; us
 
 The scheduler is a Lambda handler invoked directly by EventBridge, not over HTTP.
 
-**Registration gate**: on first sign-in the backend creates a `profiles` row. If the email is in `allowed_emails` the status is active; otherwise it is pending and the account can call only `GET /me` and `POST /auth/redeem-invite`. This check lives in the backend and does not depend on the identity provider.
+**Registration gate**: a profile exists only after an invite token is redeemed through `registration/verify`, or after `auth_admin bootstrap-owner` for the owner. Signing in never creates a profile. While `NON_OWNER_ADMISSION` is false, invites and non-owner recovery are refused at issue, options and verify (3.1, 3.4).
 
 The OpenAPI spec is the single contract for the frontend and the future iOS app; client types are generated from it.
 
@@ -284,8 +312,11 @@ The worker validates that the output matches the JSON schema, that URLs are http
 
 - All keys live in AWS and GitHub secrets, never in the repo. The repo is public; CI runs a secret scan.
 - The GitHub workflow is triggered only by `workflow_dispatch`. Do not use `pull_request_target`. Pull requests from forks must not receive secrets.
-- The Supabase service role key exists only in the Lambda environment. The frontend holds only the public key.
-- RLS is enabled on every table with default deny; the backend connects with a privileged role.
+- The frontend holds no keys or secrets. The runtime database credential exists only in the Lambda environment; the admin credential only in Kai's password manager.
+- RLS is enabled on every table. Client roles (`PUBLIC`, `anon`, `authenticated`) have no policies and no grants (default deny); only `brief_runtime` and `brief_admin` have policies. Neither backend role owns tables or has `BYPASSRLS`. The runtime role cannot create enrollment tokens.
+- Authentication follows invariants AUTH-1 to AUTH-16 in `docs/auth-passkey-design.md` section 3 (summary in 3.4).
+- Static responses carry a Content-Security-Policy (`default-src 'self'`, no inline script, `frame-ancestors 'none'`, `base-uri 'none'`, `object-src 'none'`), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The enrollment page loads no third-party script.
+- `/api/*` responses carry `Cache-Control: no-store`; CloudFront does not cache `/api/*`, and the PWA service worker does not cache it either. Request bodies, `Cookie` and `Set-Cookie` are never logged.
 - The Function URL must not be callable around CloudFront (approach in section 11 item 1). Every route requires authentication, and a Lambda concurrency cap acts as cost insurance.
 - Frontend and API share one origin (`/api/*`): no CORS, and no other origins are allowed.
 - An AWS budget alert is configured.
@@ -319,7 +350,7 @@ Do not create an `ios/` directory yet.
 |---|---|---|---|---|
 | **A. contracts** | Phase 0 | OpenAPI spec, JSON schema, DDL draft, the `docs/agent-memory/` files | Spec passes lint; covers every endpoint in section 6 | none |
 | **B. db** | `db/` | Alembic migrations, RLS policies, seed data (allowlist email injected from the environment) | An empty database can be built with one command; tests cover the 3-slot limit and the job unique key | A |
-| **C. api** | `api/` | FastAPI modules, JWT verification, internal endpoints, scheduler handler | Unit and integration tests pass; responses conform to the OpenAPI spec; a subscription-runner job for a non-owner is rejected | A, B |
+| **C. api** | `api/` | FastAPI modules, passkey auth and session checks (`docs/auth-passkey-design.md`), `auth_admin` CLI, internal endpoints, scheduler handler | Unit and integration tests pass; responses conform to the OpenAPI spec; a subscription-runner job for a non-owner is rejected | A, B |
 | **D. worker** | `worker/`, `agent-worker.yml` | `AgentRunner` interface and two implementations (the API one may be a test double), prompt, output validation | Produces valid JSON locally for fixed topics; invalid output is blocked | A |
 | **E. web** | `web/` | Sign-in, today's report, read state and notes, topic and slot settings, profile, PWA configuration, design tokens file | Usable at phone width; types generated from OpenAPI; end-to-end tests pass against a mock API; follows the minimal baseline in 3.3 with no hard-coded style values | A |
 | **F. infra** | `infra/`, deploy workflows | Terraform (including S3, CloudFront, ACM), deployment pipeline, budget alert, concurrency cap | One command deploys to Kai's AWS account; `/api/health` responds through the subdomain; calling the Function URL directly is refused | a deployable version of C |
@@ -461,7 +492,8 @@ The responsible agent must check official documentation first and record the res
    - Confirm CloudFront's current free allowance and pricing model.
    - Choose one way to lock the Function URL: (a) set the Function URL to IAM auth and use CloudFront Origin Access Control; or (b) keep the Function URL public, have CloudFront add a secret custom header, and have the API check it.
    - Before choosing (a), confirm whether requests with a body (POST, PUT, PATCH) require the client to send an extra content-hash header. If they do and the frontend cannot reasonably provide it, use (b).
-   - CloudFront must forward the `Authorization` header and must not cache `/api/*`.
+   - CloudFront must forward `Cookie`, `Origin` and `CloudFront-Viewer-Address` to `/api/*`, return multiple `Set-Cookie` headers intact, and must not cache `/api/*`. The SPA 403/404 → `index.html` rewrite must not apply to `/api/*`.
+   - Before choosing (a): every cookie-authenticated write is a body-bearing request, so the content-hash header would be needed on all of them.
    - The ACM certificate for CloudFront must be created in us-east-1.
 2. **Lambda packaging**: zip plus Lambda Web Adapter, or a container image (needs ECR; confirm storage cost) (F).
 3. **Supabase connections**: the pooling mode to use from a short-lived environment such as Lambda, and async driver compatibility (B, C).
@@ -472,15 +504,16 @@ The responsible agent must check official documentation first and record the res
 8. **Claude Code and `AGENTS.md`**: confirm how `CLAUDE.md` imports another file, and the current subagent frontmatter fields (`tools`, `model`, `isolation`) (lead).
 9. **Codex CLI sandbox**: the config key or flag that adds a writable directory outside the workspace, whether network access is available in the workspace-write sandbox (needed for package installs), and the current approval policy names (lead).
 10. **Antigravity CLI**: the flag to add a directory to the workspace, the syntax of permission allow rules, the headless flags that actually exist in the installed version, and where custom agents and scoped rules live (lead).
+11. **Auth implementation facts** (C, E, F; from `docs/auth-passkey-design.md` section 12): pinned `py_webauthn` release behaviour (UV flag, counter rejection before signature check, EdDSA, `crossOrigin`), package size and cold start on Lambda; browser support for the WebAuthn Level 3 JSON methods; Safari on `http://localhost`; creating the backend roles and policies on Supabase and turning off the Data API; the CLI over the session pooler on IPv4; a real-device CDA matrix (macOS Safari and Chrome with iPhone, Windows Chrome with iPhone).
 
 ## 12. Milestones
 
 1. **M0**: contracts and tables finalized.
 2. **M1**: the whole system works locally under Docker as defined in 4.5, including the web app with the minimal UI.
-3. **M2**: deployed to AWS; Kai can open the subdomain, sign in with Google and see the daily report.
+3. **M2**: deployed to AWS; Kai bootstraps the owner with the CLI, registers a passkey on the production RP ID, signs in and sees the daily report. The Function URL lock, cookie forwarding, response headers and no-cache rules are verified first (section 11 items 1 and 11).
 4. **M3**: settings pages done (topics, item counts, slots); read state and notes work. Retire the existing Claude scheduled-task version at this point.
 5. **M4**: visual style discussion with Kai, style selection, then restyle through the design tokens.
-6. **Later**: `AnthropicApiRunner`, inviting other users, Apple sign-in, native iOS app, public reports and community features.
+6. **Later**: `AnthropicApiRunner`, then `NON_OWNER_ADMISSION` and inviting other users; native iOS app with passkeys on the same RP ID (Associated Domains, a separate session-transport contract); public reports and community features. Auth conveniences deferred from the POC (rename passkey, sign out other devices, device labels) are evaluated at M3.
 
 ## 13. Current stopgap
 
