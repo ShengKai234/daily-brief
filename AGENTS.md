@@ -15,7 +15,9 @@ Change only the directory you own. Everything else: ask its owner in `HANDOFFS.m
 | worker (D) | Claude Code | `agent/worker` → `../daily-brief-worker` | `worker/`, `.github/workflows/agent-worker.yml` |
 | web (E) | agy | `agent/web` → `../daily-brief-web` | `web/` |
 | infra (F) | Codex | `agent/infra` → `../daily-brief-infra` | `infra/`, `.github/workflows/deploy-*.yml` (starts after M1 only) |
-| review (G) | Claude Code + Codex | read-only | nothing; writes review reports to its memory log |
+| auth (H) | Claude Code (Sonnet) | `agent/auth` → `../daily-brief-auth` | passkey auth cutover in `db/` and `api/` (`docs/auth-passkey-design.md`); takes over those directories from db/api for this work |
+| auth-web (I) | agy | `agent/auth-web` → `../daily-brief-auth-web` | passkey auth UI in `web/` (enroll, sign-in, security pages) |
+| review (G) | Codex (Claude for agy/Codex-written code) | read-only | nothing; writes review reports to its memory log. The auth cutover (H, I) is reviewed by Codex |
 
 In `docker-compose.yml` / `docker-compose.override.yml` each agent may edit only its own service block (db agent: `migrate`; api agent: `api`, `scheduler`; web agent: `web`), including removing its `todo-*` profile once the service builds. Anything else there (the `db` service, volumes, `Makefile`) goes to lead via `HANDOFFS.md`.
 
@@ -43,6 +45,9 @@ Each worktree has its own git-ignored `.env` (copy `.env.example`) with its own 
 | worker | `brief-worker` | 300 | 5732 | 8300 | 5473 |
 | web | `brief-web` | 400 | 5832 | 8400 | 5573 |
 | infra | `brief-infra` | 500 | 5932 | 8500 | 5673 |
+| demo (lead, local only) | `brief-demo` | 600 | 6032 | 8600 | 5773 |
+| auth | `brief-auth` | 700 | 6132 | 8700 | 5873 |
+| auth-web | `brief-auth-web` | 800 | 6232 | 8800 | 5973 |
 
 Repo-wide: `make up`, `make down`, `make migrate`, `make seed`, `make test`, `make lint`, `make logs`.
 
