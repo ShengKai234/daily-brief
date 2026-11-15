@@ -11,10 +11,12 @@ info:
     **Authentication** (DESIGN 3.4, `docs/auth-passkey-design.md`). Users sign in with passkeys
     (WebAuthn). Every `/v1` route requires the session cookie (`sessionCookie`), except the four
     public sign-in operations under `/v1/auth/registration/*` and `/v1/auth/login/*`. A session is
-    valid only if it is unrevoked, within its idle and absolute lifetime, its passkey is active and
-    `profiles.status` is `active`; otherwise 401 `unauthorized`. Every `/internal` route requires the
+    valid only if it is unrevoked, within its idle and absolute lifetime and `profiles.status` is
+    `active`; a `kind='passkey'` session also needs its passkey to be active and owned by the same user,
+    and a `kind='dev'` session is accepted only when `APP_ENV=local`. Otherwise 401 `unauthorized`. Every `/internal` route requires the
     service token in `X-Internal-Token` (`internalToken`). `/v1` rejects the internal token and any
-    `Authorization: Bearer` header; `/internal` rejects session cookies. `/health` is unauthenticated.
+    `Authorization: Bearer` header (401 `unauthorized`), on public sign-in operations too; `/internal`
+    rejects session cookies. `/health` is unauthenticated.
 
     **Request rules for `/v1`.** Every unsafe method (POST, PUT, PATCH, DELETE), including the public
     sign-in operations and logout, needs exactly one `Origin` header equal to a configured origin,
@@ -26,8 +28,9 @@ info:
 
     **Registration gate.** A profile is created only by `registerVerify` with an invite token, or by
     the admin CLI for the owner. Signing in never creates a profile. `status` is `active` or
-    `disabled`; a disabled account gets 403 `account_disabled` only at sign-in after a valid passkey
-    proof, and 401 everywhere else because its sessions are revoked.
+    `disabled`. A disabled account's sessions are revoked, so session-authenticated routes return 401;
+    the public sign-in and registration operations return 403 `account_disabled`, at login only after a
+    valid passkey proof.
 
     **Errors.** All errors are RFC 9457 `application/problem+json` (`Problem`) with a
     machine-readable `code`.
@@ -119,6 +122,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/auth/registration/options:
@@ -147,6 +151,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/CeremonyOptions" }
         "400": { $ref: "#/components/responses/AuthBadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/AuthForbidden" }
         "409": { $ref: "#/components/responses/TokenConflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -178,6 +183,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Profile" }
         "400": { $ref: "#/components/responses/AuthBadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/AuthForbidden" }
         "409": { $ref: "#/components/responses/TokenConflict" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -203,6 +209,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CeremonyOptions" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/AuthForbidden" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -444,6 +451,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/topics/{topic_id}:
@@ -469,6 +477,7 @@ paths:
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
     delete:
@@ -526,6 +535,7 @@ paths:
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/subscriptions/{subscription_id}:
@@ -550,6 +560,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
     delete:
@@ -599,6 +610,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/reports:
@@ -678,6 +690,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ForbiddenAccount" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/agent-settings:
@@ -720,6 +733,7 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
   /v1/jobs:
@@ -949,12 +963,18 @@ components:
       schema: { type: string, format: uuid }
   headers:
     SessionCookie:
-      description: Sets or clears the session cookie (see `sessionCookie`).
+      description: |
+        Sets the session cookie `__Host-brief_session=<token>; Secure; HttpOnly; SameSite=Strict; Path=/;
+        Max-Age=<seconds until absolute_expires_at>` (host-only, no `Domain`). Clearing uses the same name
+        and attributes with `Max-Age=0`. Locally (`APP_ENV=local`) the name is
+        `brief_session_<COMPOSE_PROJECT_NAME>` and `Secure` is omitted.
       schema: { type: string }
     BindingCookie:
       description: |
-        Sets or refreshes the browser-binding cookie `__Host-brief_ceremony` (`Max-Age=600`; locally
-        `brief_ceremony_<COMPOSE_PROJECT_NAME>`). Reused across ceremonies in the same browser.
+        Sets or refreshes the browser-binding cookie `__Host-brief_ceremony=<random>; Secure; HttpOnly;
+        SameSite=Strict; Path=/; Max-Age=600` (host-only, no `Domain`). An existing well-formed value is
+        reused, so several ceremonies in one browser can run at once. Locally the name is
+        `brief_ceremony_<COMPOSE_PROJECT_NAME>` and `Secure` is omitted.
       schema: { type: string }
   responses:
     BadRequest:
@@ -1012,12 +1032,15 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     AuthenticationFailed:
-      description: Any failed passkey proof (code `authentication_failed`); the body is identical for every cause.
+      description: |
+        `authentication_failed` for any failed passkey proof (the body is identical for every cause), or
+        `unauthorized` for a wrong-family credential (Bearer, internal token) or, on reauth, a missing,
+        expired or revoked session.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
     TokenConflict:
-      description: "`enrollment_token_used`, `enrollment_token_expired` or `credential_exists`."
+      description: "`enrollment_token_used`, `enrollment_token_expired`, `credential_exists` or `passkey_limit` (add_credential token, 10 active passkeys)."
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }

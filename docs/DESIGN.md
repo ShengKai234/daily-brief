@@ -317,7 +317,7 @@ The worker validates that the output matches the JSON schema, that URLs are http
 - Authentication follows invariants AUTH-1 to AUTH-16 in `docs/auth-passkey-design.md` section 3 (summary in 3.4).
 - Static responses carry a Content-Security-Policy (`default-src 'self'`, no inline script, `frame-ancestors 'none'`, `base-uri 'none'`, `object-src 'none'`), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The enrollment page loads no third-party script.
 - `/api/*` responses carry `Cache-Control: no-store`; CloudFront does not cache `/api/*`, and the PWA service worker does not cache it either. Request bodies, `Cookie` and `Set-Cookie` are never logged.
-- The Function URL must not be callable around CloudFront (approach in section 11 item 1). Every route requires authentication, and a Lambda concurrency cap acts as cost insurance.
+- The Function URL must not be callable around CloudFront (approach in section 11 item 1). Every route requires authentication except `/api/health` and the four public sign-in operations (3.4), which are rate limited; a Lambda concurrency cap acts as cost insurance.
 - Frontend and API share one origin (`/api/*`): no CORS, and no other origins are allowed.
 - An AWS budget alert is configured.
 - Each user has a daily run limit (`daily_run_limit`).
@@ -349,7 +349,7 @@ Do not create an `ios/` directory yet.
 | Agent | Scope | Deliverables | Acceptance criteria | Depends on |
 |---|---|---|---|---|
 | **A. contracts** | Phase 0 | OpenAPI spec, JSON schema, DDL draft, the `docs/agent-memory/` files | Spec passes lint; covers every endpoint in section 6 | none |
-| **B. db** | `db/` | Alembic migrations, RLS policies, seed data (allowlist email injected from the environment) | An empty database can be built with one command; tests cover the 3-slot limit and the job unique key | A |
+| **B. db** | `db/` | Alembic migrations, RLS policies and backend-role grants, seed data (the owner profile `OWNER_USER_ID` without email, default topics and slots) | An empty database can be built with one command; tests cover the 3-slot limit and the job unique key | A |
 | **C. api** | `api/` | FastAPI modules, passkey auth and session checks (`docs/auth-passkey-design.md`), `auth_admin` CLI, internal endpoints, scheduler handler | Unit and integration tests pass; responses conform to the OpenAPI spec; a subscription-runner job for a non-owner is rejected | A, B |
 | **D. worker** | `worker/`, `agent-worker.yml` | `AgentRunner` interface and two implementations (the API one may be a test double), prompt, output validation | Produces valid JSON locally for fixed topics; invalid output is blocked | A |
 | **E. web** | `web/` | Sign-in, today's report, read state and notes, topic and slot settings, profile, PWA configuration, design tokens file | Usable at phone width; types generated from OpenAPI; end-to-end tests pass against a mock API; follows the minimal baseline in 3.3 with no hard-coded style values | A |
@@ -493,7 +493,7 @@ The responsible agent must check official documentation first and record the res
    - Choose one way to lock the Function URL: (a) set the Function URL to IAM auth and use CloudFront Origin Access Control; or (b) keep the Function URL public, have CloudFront add a secret custom header, and have the API check it.
    - Before choosing (a), confirm whether requests with a body (POST, PUT, PATCH) require the client to send an extra content-hash header. If they do and the frontend cannot reasonably provide it, use (b).
    - CloudFront must forward `Cookie`, `Origin` and `CloudFront-Viewer-Address` to `/api/*`, return multiple `Set-Cookie` headers intact, and must not cache `/api/*`. The SPA 403/404 → `index.html` rewrite must not apply to `/api/*`.
-   - Before choosing (a): every cookie-authenticated write is a body-bearing request, so the content-hash header would be needed on all of them.
+   - Before choosing (a): the content-hash header would be needed on every request that has a body (sign-in ceremonies and most business writes). Bodyless writes (logout, reauth and passkey options, `POST /v1/jobs`, DELETE) must keep working with an empty body (AUTH-9).
    - The ACM certificate for CloudFront must be created in us-east-1.
 2. **Lambda packaging**: zip plus Lambda Web Adapter, or a container image (needs ECR; confirm storage cost) (F).
 3. **Supabase connections**: the pooling mode to use from a short-lived environment such as Lambda, and async driver compatibility (B, C).

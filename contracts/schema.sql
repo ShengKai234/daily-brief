@@ -373,6 +373,24 @@ revoke all on all sequences in schema public from public;
 alter default privileges in schema public revoke all on tables from public;
 alter default privileges in schema public revoke all on sequences from public;
 
+-- Default privileges of the migration role, both global and per schema: a global default grant
+-- would otherwise reach future tables (TRUNCATE ignores RLS). Run as brief_migrator or a member.
+do $$
+declare r text;
+begin
+  if exists (select 1 from pg_roles where rolname = 'brief_migrator') then
+    foreach r in array array['public', 'anon', 'authenticated'] loop
+      if r = 'public' or exists (select 1 from pg_roles where rolname = r) then
+        execute format('alter default privileges for role brief_migrator revoke all on tables from %s', r);
+        execute format('alter default privileges for role brief_migrator revoke all on sequences from %s', r);
+        execute format('alter default privileges for role brief_migrator revoke all on functions from %s', r);
+        execute format('alter default privileges for role brief_migrator in schema public revoke all on tables from %s', r);
+        execute format('alter default privileges for role brief_migrator in schema public revoke all on sequences from %s', r);
+      end if;
+    end loop;
+  end if;
+end $$;
+
 grant usage on schema public to brief_runtime, brief_admin;
 
 -- brief_runtime: read and write everything it serves, but cannot create enrollment tokens.
@@ -399,6 +417,8 @@ create policy runtime_cleanup on enrollment_tokens for delete to brief_runtime
   using (coalesce(used_at, revoked_at, expires_at) < now() - interval '90 days');
 
 -- brief_admin: issue and revoke tokens, bootstrap the owner, disable/enable users, revoke sessions.
+-- It cannot create sessions. `auth_admin dev-session` (APP_ENV=local only) uses the local runtime
+-- connection (DATABASE_URL as brief_runtime), never the admin connection.
 grant select, insert, update on enrollment_tokens, profiles to brief_admin;
 grant select, insert on agent_settings, auth_events to brief_admin;
 grant select, update on auth_sessions, webauthn_ceremonies to brief_admin;
