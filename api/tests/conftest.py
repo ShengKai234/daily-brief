@@ -3,6 +3,7 @@ import secrets
 import shutil
 import subprocess
 import time
+from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -186,7 +187,9 @@ class Client:
 
 
 @pytest.fixture
-async def env(database_url):
+async def env(database_url, monkeypatch):
+    # Tests share one client address; the rate-limit scenarios set the real limit explicitly.
+    monkeypatch.setattr("app.security.RATE_LIMIT", 100_000)
     settings = make_settings(database_url)
     app = create_app(settings)
     database = Database(settings)
@@ -200,6 +203,8 @@ async def env(database_url):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as raw:
+        # Each Client keeps its own cookies; the shared transport must never store any.
+        raw.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
 
         async def as_user(user_id):
             """A client signed in with a local dev session (no passkey ceremony)."""
