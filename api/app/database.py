@@ -38,7 +38,8 @@ class Database:
         url = url.replace("postgresql+psycopg://", "postgresql://", 1)
         if not url.startswith("postgresql://"):
             raise ValueError("DATABASE_URL must be a PostgreSQL URL")
-        options = {} if self.settings.app_env == "local" else {"sslmode": "require"}
+        mode = self.settings.database_sslmode or ("" if self.settings.local else "require")
+        options = {"sslmode": mode} if mode else {}
         # No process-level pool or prepared statements: safe for transaction pooling
         # and Lambda freeze/thaw. Connections close at the end of every transaction.
         async with await AsyncConnection.connect(

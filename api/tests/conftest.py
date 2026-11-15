@@ -86,6 +86,7 @@ def make_settings(superuser_url, **overrides):
         "webauthn_origins": ("http://localhost:5173",),
         "rate_limit_key": secrets.token_urlsafe(32),
         "compose_project_name": "test",
+        "database_sslmode": "disable",
         **overrides,
     }
     return Settings(**values)
@@ -125,6 +126,7 @@ class Client:
         self.settings = settings
         self.cookies = dict(cookies or {})
         self.operations = set()
+        self.default_headers = []
 
     def remember(self, response):
         for header in response.headers.get_list("set-cookie"):
@@ -136,12 +138,16 @@ class Client:
                 self.cookies[name] = value
 
     async def request(self, method, path, *, headers=None, origin=DEFAULT, contract=True, **kwargs):
-        headers = dict(headers or {})
+        headers = list(headers.items()) if isinstance(headers, dict) else list(headers or [])
+        headers = [*self.default_headers, *headers]
+        names = {k.lower() for k, _ in headers}
         if method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and origin is not None:
-            headers["Origin"] = self.settings.webauthn_origins[0] if origin is DEFAULT else origin
+            value = self.settings.webauthn_origins[0] if origin is DEFAULT else origin
+            if "origin" not in names:
+                headers.append(("Origin", value))
         # The worker is not a browser: it never carries cookies to /internal.
-        if self.cookies and "Cookie" not in headers and not path.startswith("/internal"):
-            headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        if self.cookies and "cookie" not in names and not path.startswith("/internal"):
+            headers.append(("Cookie", "; ".join(f"{k}={v}" for k, v in self.cookies.items())))
         response = await self.raw.request(method, "/api" + path, headers=headers, **kwargs)
         self.remember(response)
         assert response.headers.get("cache-control") == "no-store", (method, path)
@@ -298,3 +304,34 @@ def result_for(claimed):
             "output_tokens": None,
         },
     }
+
+
+def production_settings(superuser_url, **overrides):
+    return make_settings(
+        superuser_url,
+        app_env="production",
+        webauthn_rp_id="brief.example.com",
+        webauthn_origins=("https://brief.example.com",),
+        worker_dispatcher="github",
+        agent_runner="claude_subscription",
+        compose_project_name="prod",
+        **overrides,
+    )
+
+
+@pytest.fixture
+async def prod(env, database_url):
+    """The same database served by an APP_ENV=production app (TLS to the DB is test-relaxed)."""
+    settings = production_settings(database_url)
+    app = create_app(settings)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://brief.example.com"
+    ) as raw:
+        raw.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+
+        def browser(ip="198.51.100.7:40000"):
+            client = Client(raw, settings)
+            client.default_headers = [("CloudFront-Viewer-Address", ip)] if ip else []
+            return client
+
+        yield {"settings": settings, "app": app, "browser": browser, "raw": raw}

@@ -41,6 +41,8 @@ class Settings:
     auth_global_circuit_breaker: bool = field(default=False)
     # The admin CLI runs on Kai's machine and needs no runtime secrets in production.
     admin_cli: bool = False
+    # Production connections require TLS; only tests against a throwaway container relax it.
+    database_sslmode: str = ""
 
     def __post_init__(self):
         if self.app_env not in APP_ENVS:
