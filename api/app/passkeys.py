@@ -407,7 +407,7 @@ async def stored_credential(db, credential_id: bytes):
     )
 
 
-def prove_assertion(settings, credential, challenge, stored, *, owner_id=None):
+def prove_assertion(settings, credential, challenge, stored, *, owner_id=None, require_handle=True):
     """Raise WebAuthnFailure unless the assertion is valid for exactly this stored credential."""
     if stored is None or stored["revoked_at"] is not None:
         raise WebAuthnFailure
@@ -416,7 +416,10 @@ def prove_assertion(settings, credential, challenge, stored, *, owner_id=None):
     assertion = verify_assertion(settings, credential, challenge, bytes(stored["public_key"]))
     if (
         assertion.credential_id != bytes(stored["credential_id"])
-        or assertion.user_handle != stored["user_id"].bytes
+        # Discoverable login must carry the handle; with allowCredentials (reauth) it may be
+        # omitted, but a supplied handle must still match.
+        or (assertion.user_handle is None and require_handle)
+        or (assertion.user_handle is not None and assertion.user_handle != stored["user_id"].bytes)
         or assertion.backup_eligible != stored["backup_eligible"]
     ):
         raise WebAuthnFailure
@@ -568,7 +571,12 @@ async def reauth_verify(request: Request):
             stored = None
     try:
         assertion = prove_assertion(
-            settings, credential, bytes(ceremony["challenge"]), stored, owner_id=me.user_id
+            settings,
+            credential,
+            bytes(ceremony["challenge"]),
+            stored,
+            owner_id=me.user_id,
+            require_handle=False,
         )
     except WebAuthnFailure:
         raise await finish_failure(
