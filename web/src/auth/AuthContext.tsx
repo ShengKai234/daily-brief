@@ -1,67 +1,65 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { ApiError, apiClient } from '../api/client';
+import { ApiError, apiClient, setUnauthorizedHandler } from '../api/client';
+import { ERROR_MESSAGES, formatProblemMessage } from '../api/errors';
 import type { Profile, ProfileUpdate } from '../api/types';
-import {
-  DEV_OWNER_EMAIL,
-  DEV_OWNER_USER_ID,
-  buildSupabaseGoogleOAuthUrl,
-  extractSupabaseHashToken,
-  issueDevJwt,
-} from './jwt';
-
-const STORAGE_KEY = 'daily_brief_auth_token';
 
 interface AuthContextValue {
-  token: string | null;
   profile: Profile | null;
   loading: boolean;
   error: string | null;
   errorCode: string | null;
-  signInWithDevAccount: (claims?: { sub: string; email: string }) => Promise<void>;
-  signInWithToken: (rawToken: string) => Promise<void>;
-  signInWithGoogle: () => void;
-  redeemInviteCode: (code: string) => Promise<Profile>;
+  clearError: () => void;
+  setSignedInProfile: (nextProfile: Profile) => void;
   updateProfile: (update: ProfileUpdate) => Promise<Profile>;
   refreshProfile: () => Promise<void>;
-  signOut: () => void;
+  signOut: () => Promise<void>;
+  handleSessionRevoked: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      const hashToken = extractSupabaseHashToken(window.location.hash);
-      if (hashToken) {
-        window.localStorage.setItem(STORAGE_KEY, hashToken);
-        window.history.replaceState(null, '', window.location.pathname + window.location.search);
-        return hashToken;
-      }
-      return window.localStorage.getItem(STORAGE_KEY);
-    }
-    return null;
-  });
-
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState<boolean>(Boolean(token));
+  const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const loadProfileForToken = useCallback(async (activeToken: string) => {
-    setLoading(true);
+  const clearError = useCallback(() => {
     setError(null);
     setErrorCode(null);
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setProfile(null);
+      setErrorCode('unauthorized');
+      setError(ERROR_MESSAGES.unauthorized);
+    });
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, []);
+
+  const loadCurrentProfile = useCallback(async (silentOn401: boolean) => {
+    setLoading(true);
+    if (!silentOn401) {
+      setError(null);
+      setErrorCode(null);
+    }
     try {
-      const loaded = await apiClient.getMe(activeToken);
+      const loaded = await apiClient.getMe({ skipUnauthorizedHandler: true });
       setProfile(loaded);
+      setError(null);
+      setErrorCode(null);
     } catch (err) {
       setProfile(null);
       if (err instanceof ApiError) {
-        setError(err.problem.detail);
-        setErrorCode(err.problem.code);
-        if (err.problem.status === 401) {
-          window.localStorage.removeItem(STORAGE_KEY);
-          setToken(null);
+        if (err.problem.status === 401 && silentOn401) {
+          setError(null);
+          setErrorCode(null);
+        } else {
+          setError(formatProblemMessage(err.problem));
+          setErrorCode(err.problem.code);
         }
       } else {
         setError(err instanceof Error ? err.message : 'Failed to load profile.');
@@ -72,104 +70,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (!token) {
-      setProfile(null);
-      setLoading(false);
-      return;
-    }
-    void loadProfileForToken(token);
-  }, [token, loadProfileForToken]);
+    void loadCurrentProfile(true);
+  }, [loadCurrentProfile]);
 
-  const signInWithToken = useCallback(async (rawToken: string) => {
-    const trimmed = rawToken.trim();
-    if (!trimmed) {
-      setError('Token is required.');
-      return;
-    }
-    window.localStorage.setItem(STORAGE_KEY, trimmed);
-    setToken(trimmed);
+  const setSignedInProfile = useCallback((nextProfile: Profile) => {
+    setProfile(nextProfile);
+    setError(null);
+    setErrorCode(null);
+    setLoading(false);
   }, []);
 
-  const signInWithDevAccount = useCallback(
-    async (claims: { sub: string; email: string } = { sub: DEV_OWNER_USER_ID, email: DEV_OWNER_EMAIL }) => {
-      setLoading(true);
-      setError(null);
-      setErrorCode(null);
-      try {
-        const jwt = await issueDevJwt(claims);
-        window.localStorage.setItem(STORAGE_KEY, jwt);
-        setToken(jwt);
-      } catch (err) {
-        setLoading(false);
-        setError(err instanceof Error ? err.message : 'Failed to issue dev token.');
-      }
-    },
-    [],
-  );
-
-  const signInWithGoogle = useCallback(() => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    if (!supabaseUrl) {
-      setError('VITE_SUPABASE_URL is not configured in this environment.');
-      return;
-    }
-    const redirectUrl = buildSupabaseGoogleOAuthUrl(supabaseUrl, window.location.origin);
-    window.location.assign(redirectUrl);
+  const updateProfile = useCallback(async (update: ProfileUpdate): Promise<Profile> => {
+    const updated = await apiClient.updateMe(update);
+    setProfile(updated);
+    return updated;
   }, []);
-
-  const redeemInviteCode = useCallback(
-    async (code: string): Promise<Profile> => {
-      if (!token) {
-        throw new Error('Not signed in.');
-      }
-      const updated = await apiClient.redeemInvite(token, { code });
-      setProfile(updated);
-      return updated;
-    },
-    [token],
-  );
-
-  const updateProfile = useCallback(
-    async (update: ProfileUpdate): Promise<Profile> => {
-      if (!token) {
-        throw new Error('Not signed in.');
-      }
-      const updated = await apiClient.updateMe(token, update);
-      setProfile(updated);
-      return updated;
-    },
-    [token],
-  );
 
   const refreshProfile = useCallback(async () => {
-    if (token) {
-      await loadProfileForToken(token);
-    }
-  }, [token, loadProfileForToken]);
+    await loadCurrentProfile(false);
+  }, [loadCurrentProfile]);
 
-  const signOut = useCallback(() => {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setToken(null);
+  const handleSessionRevoked = useCallback(() => {
     setProfile(null);
     setError(null);
     setErrorCode(null);
   }, []);
 
+  const signOut = useCallback(async () => {
+    try {
+      await apiClient.logout();
+    } catch {
+      // Session may already be expired or revoked.
+    } finally {
+      setProfile(null);
+      setError(null);
+      setErrorCode(null);
+    }
+  }, []);
+
   return (
     <AuthContext.Provider
       value={{
-        token,
         profile,
         loading,
         error,
         errorCode,
-        signInWithDevAccount,
-        signInWithToken,
-        signInWithGoogle,
-        redeemInviteCode,
+        clearError,
+        setSignedInProfile,
         updateProfile,
         refreshProfile,
         signOut,
+        handleSessionRevoked,
       }}
     >
       {children}
