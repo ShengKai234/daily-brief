@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -617,5 +617,55 @@ describe('End-to-end user flows against the mock API', () => {
         /A brief generation job is already in progress/i,
       );
     });
+  });
+
+  it('loads and displays the finished brief after Generate now succeeds even when getReport resolves asynchronously after a network delay (REVIEWS 5-1)', async () => {
+    const user = userEvent.setup();
+    installFakeBrowserPasskey(MOCK_DEFAULT_PASSKEY_CRED_ID);
+    renderApp(['/']);
+
+    await user.click(
+      await screen.findByRole('button', { name: /Sign in with a passkey/i }),
+    );
+
+    const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
+
+    // Switch to an empty date first so the page shows "No Reports for 2026-11-01", matching the proof run
+    const dateInput = screen.getByLabelText(/Report Date/i);
+    await user.clear(dateInput);
+    await user.type(dateInput, '2026-11-01');
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /No Reports for 2026-11-01/i }),
+      ).toBeInTheDocument();
+    });
+
+    const originalGetReport = apiClient.getReport.bind(apiClient);
+    const getReportSpy = vi
+      .spyOn(apiClient, 'getReport')
+      .mockImplementation(async (reportId) => {
+        // Flush any state updates queued before getReport was awaited (simulating browser render while fetch is in flight)
+        act(() => {});
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+        return originalGetReport(reportId);
+      });
+
+    try {
+      setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
+      await user.click(generateBtn);
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: /On-demand · 6\/6 unread/i }),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole('heading', {
+            name: /On-demand brief update for Stock Market/i,
+          }),
+        ).toBeInTheDocument();
+      });
+    } finally {
+      getReportSpy.mockRestore();
+    }
   });
 });

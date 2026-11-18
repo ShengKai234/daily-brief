@@ -168,6 +168,14 @@ export function ReportsPage() {
   const [jobErrorCode, setJobErrorCode] = useState<string | null>(null);
   const [jobErrorMessage, setJobErrorMessage] = useState<string | null>(null);
   const preferredReportIdRef = useRef<string | null>(null);
+  const mountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const isJobActive =
     submittingJob || activeJob?.status === 'queued' || activeJob?.status === 'running';
@@ -273,37 +281,45 @@ export function ReportsPage() {
 
       try {
         const updated = await apiClient.getJob(activeJob.id);
-        if (cancelled) {
+        if (cancelled || !mountedRef.current) {
           return;
         }
-        setActiveJob(updated);
         if (updated.status === 'queued' || updated.status === 'running') {
+          setActiveJob(updated);
           setPollTick((prev) => prev + 1);
         } else if (updated.status === 'succeeded') {
-          setPollStartedAt(null);
           if (updated.report_id) {
             preferredReportIdRef.current = updated.report_id;
             const loaded = await apiClient.getReport(updated.report_id);
-            if (!cancelled) {
-              if (loaded.report_date !== selectedDate) {
-                setSelectedDate(loaded.report_date);
-              } else {
-                await loadReportsForDate(loaded.report_date, loaded.id);
-              }
-              setSelectedReportId(loaded.id);
-              setReport(loaded);
+            if (!mountedRef.current) {
+              return;
             }
+            if (loaded.report_date !== selectedDate) {
+              setSelectedDate(loaded.report_date);
+            }
+            await loadReportsForDate(loaded.report_date, loaded.id);
+            if (!mountedRef.current) {
+              return;
+            }
+            setSelectedReportId(loaded.id);
+            setReport(loaded);
           } else {
             await loadReportsForDate(selectedDate);
+            if (!mountedRef.current) {
+              return;
+            }
           }
-        } else if (updated.status === 'failed') {
+          setActiveJob(updated);
           setPollStartedAt(null);
+        } else if (updated.status === 'failed') {
           const code = updated.error_code || 'worker_failed';
           setJobErrorCode(code);
           setJobErrorMessage(`Brief generation failed (${code}).`);
+          setActiveJob(updated);
+          setPollStartedAt(null);
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && mountedRef.current) {
           setActiveJob(null);
           setPollStartedAt(null);
           if (err instanceof ApiError) {
