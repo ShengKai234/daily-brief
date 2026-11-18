@@ -1,0 +1,51 @@
+from contextlib import asynccontextmanager
+
+from psycopg import AsyncConnection, sql
+from psycopg.rows import dict_row
+
+
+class Session:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def all(self, query, params=()):
+        return await (await self.connection.execute(query, params)).fetchall()
+
+    async def one(self, query, params=()):
+        return await (await self.connection.execute(query, params)).fetchone()
+
+    async def execute(self, query, params=()):
+        return await self.connection.execute(query, params)
+
+    async def update(self, table, values, where, params):
+        # Identifiers originate only in module code, never in request values.
+        query = sql.SQL("UPDATE {} SET {} WHERE {} RETURNING *").format(
+            sql.Identifier(table),
+            sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in values),
+            sql.SQL(where),
+        )
+        return await self.one(query, (*values.values(), *params))
+
+
+class Database:
+    def __init__(self, settings, url=None):
+        self.settings = settings
+        self.url = url or settings.database_url
+
+    @asynccontextmanager
+    async def transaction(self):
+        url = self.url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        url = url.replace("postgresql+psycopg://", "postgresql://", 1)
+        if not url.startswith("postgresql://"):
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL")
+        # Production always verifies the server certificate and host name (design 4.4); a weaker
+        # sslmode in the URL cannot lower it, and sslrootcert from the URL is kept. Only tests
+        # against a throwaway container set `database_sslmode` explicitly.
+        mode = self.settings.database_sslmode or ("" if self.settings.local else "verify-full")
+        options = {"sslmode": mode} if mode else {}
+        # No process-level pool or prepared statements: safe for transaction pooling
+        # and Lambda freeze/thaw. Connections close at the end of every transaction.
+        async with await AsyncConnection.connect(
+            url, row_factory=dict_row, prepare_threshold=None, connect_timeout=10, **options
+        ) as connection:
+            yield Session(connection)
