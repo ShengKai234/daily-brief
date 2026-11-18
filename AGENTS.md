@@ -25,7 +25,7 @@ In `docker-compose.yml` / `docker-compose.override.yml` each agent may edit only
 
 Shared files live on the `memory` branch, checked out at `../daily-brief-memory`. Use `$BRIEF_MEMORY_DIR` (= `<that worktree>/docs/agent-memory`), never your own worktree's copy.
 
-1. Start of session: read `BOARD.md`, `DECISIONS.md`, `HANDOFFS.md` entries addressed to you, and the logs of agents you depend on. Resolve open handoffs to you before new work.
+1. Start of session: read `BOARD.md`, `DECISIONS.md`, `HANDOFFS.md` entries addressed to you, `REVIEWS.md` rows owned by you, and the logs of agents you depend on. Resolve open handoffs and open review rows to you before new work.
 2. Update your own `BOARD.md` row when you start and stop. Blocked → status `blocked` + a `HANDOFFS.md` entry.
 3. Your log is `<agent>.md`: newest entry on top, dated. Shared files are append-only; never rewrite another agent's text.
 4. Write facts: commands run and their results. Mark anything unverified as unverified.
@@ -82,6 +82,15 @@ Python 3.12+, `uv` only (no pip/poetry). Install dependencies separately in each
 - Never use `pull_request_target` in workflows.
 - Never let the `claude_subscription` runner process a job for anyone but the configured owner (DESIGN 3.1).
 
+## Review findings (`REVIEWS.md`)
+
+Every finding from an agent review (Codex, Claude) or from Kai is tracked in `$BRIEF_MEMORY_DIR/REVIEWS.md` (protocol at the top of that file).
+
+- **Reviewers** record each finding as a row (`<PR>-<n>`, severity, `file:line`, owner) right after the review. Kai's findings (PR comments or messages to lead) are recorded by lead.
+- **Owners** fix every open row, highest severity first: commit, push, set `fixed` with the commit SHA. If you disagree, set `disputed` with a reason and write to `HANDOFFS.md` (`to: lead`, or `to: Kai` for his findings). Never skip a row silently.
+- **The reviewer** re-checks and sets `verified`, or reopens the row.
+- A PR is ready to merge only with no unverified Critical/Major rows and no undecided `disputed` rows.
+
 ## When you stop
 
-Update your `BOARD.md` row and your log, then report: what you did, how you verified it (commands + results), and what is not done or not verified. Commit to your own `agent/<name>` branch, push only that branch (`git push -u origin agent/<name>`), and open a pull request into `main` with `gh pr create`. Never merge; Kai merges after a cross-vendor review (DESIGN 10.2). Set your BOARD status to `done` with the PR link.
+Update your `BOARD.md` row, your log and your `REVIEWS.md` rows, then report: what you did, how you verified it (commands + results), and what is not done or not verified. Commit to your own `agent/<name>` branch, push only that branch (`git push -u origin agent/<name>`), and open a pull request into `main` with `gh pr create`. Never merge; Kai merges after a cross-vendor review (DESIGN 10.2). Set your BOARD status to `done` with the PR link.
