@@ -345,6 +345,24 @@ describe('OpenAPI contract & mock API enforcement', () => {
 });
 
 describe('Passkey auth, enrollment, security, and 401 handling', () => {
+  it('loads blocking enroll-bootstrap.js before any module script in index.html without inline scripts (REVIEWS 9-1)', () => {
+    const webRoot = path.resolve(__dirname, '../..');
+    const indexHtml = fs.readFileSync(path.join(webRoot, 'index.html'), 'utf-8');
+    const bootstrapPos = indexHtml.indexOf('<script src="/enroll-bootstrap.js"></script>');
+    const modulePos = indexHtml.indexOf('<script type="module"');
+    expect(bootstrapPos).toBeGreaterThan(-1);
+    expect(modulePos).toBeGreaterThan(bootstrapPos);
+    expect(indexHtml).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/i);
+
+    const bootstrapJs = fs.readFileSync(
+      path.join(webRoot, 'public/enroll-bootstrap.js'),
+      'utf-8',
+    );
+    expect(bootstrapJs).toContain('history.replaceState');
+    expect(bootstrapJs).not.toContain('localStorage');
+    expect(bootstrapJs).not.toContain('sessionStorage');
+  });
+
   it('extracts enrollment token from URL fragment and immediately strips it via history.replaceState', () => {
     clearEnrollmentToken();
     window.history.replaceState(null, '', '/enroll#t=secret-token-value-123');
