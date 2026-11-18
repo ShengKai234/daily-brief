@@ -128,11 +128,12 @@ def verify_registration(settings, credential, challenge) -> RegisteredCredential
     be = verified.credential_device_type.value == "multi_device"
     bs = bool(verified.credential_backed_up)
     _check_flags(be, bs)
-    transports = [
-        t
-        for t in (credential.get("response", {}).get("transports") or [])
-        if isinstance(t, str) and t in KNOWN_TRANSPORTS
-    ]
+    raw_transports = credential["response"].get("transports")
+    if raw_transports is None:
+        raw_transports = []
+    if not isinstance(raw_transports, list):
+        raise WebAuthnFailure
+    transports = [t for t in raw_transports if isinstance(t, str) and t in KNOWN_TRANSPORTS]
     aaguid = verified.aaguid
     if aaguid == "00000000-0000-0000-0000-000000000000":
         aaguid = None
