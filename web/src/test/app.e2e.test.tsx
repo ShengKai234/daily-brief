@@ -25,6 +25,7 @@ import {
   extractEnrollmentTokenFromLocation,
   getEnrollmentToken,
 } from '../auth/enrollmentToken';
+import { createPasskey, getPasskeyAssertion } from '../auth/webauthn';
 import { todayIn } from '../pages/ReportsPage';
 import { getNewestReport, getTodayInTimezone } from '../utils/date';
 
@@ -507,6 +508,119 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
     } finally {
       logoutSpy.mockRestore();
     }
+  });
+
+  it('serializes WebAuthn options/credentials via both native L3 JSON and base64url fallback paths and rejects corrupted proofs (REVIEWS 9-3)', async () => {
+    // 1. Native L3 JSON path
+    const parseCreateSpy = vi.fn((opts: Record<string, unknown>) => ({ nativeCreate: opts }));
+    const parseReqSpy = vi.fn((opts: Record<string, unknown>) => ({ nativeReq: opts }));
+    const toJsonCred = {
+      id: 'cred-native-1',
+      rawId: new Uint8Array([1, 2]).buffer,
+      type: 'public-key',
+      toJSON: () => ({
+        id: 'cred-native-1',
+        rawId: 'AQI',
+        type: 'public-key',
+        response: { clientDataJSON: 'e30', attestationObject: 'AQI' },
+        authenticatorAttachment: 'platform',
+        clientExtensionResults: {},
+      }),
+    };
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: class MockNativePkc {
+        static parseCreationOptionsFromJSON = parseCreateSpy;
+        static parseRequestOptionsFromJSON = parseReqSpy;
+      },
+    });
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: vi.fn(async () => toJsonCred),
+        get: vi.fn(async () => toJsonCred),
+      },
+    });
+
+    const nativeCreated = await createPasskey({ challenge: 'AQID', user: { id: 'BAUG' } });
+    expect(parseCreateSpy).toHaveBeenCalledTimes(1);
+    expect(nativeCreated.id).toBe('cred-native-1');
+
+    const nativeAsserted = await getPasskeyAssertion({ challenge: 'AQID' });
+    expect(parseReqSpy).toHaveBeenCalledTimes(1);
+    expect(nativeAsserted.id).toBe('cred-native-1');
+
+    // 2. Fallback base64url path (no L3 JSON methods, no toJSON)
+    const fallbackCreateMock = vi.fn(async () => ({
+      id: 'cred-fallback-1',
+      rawId: new Uint8Array([1, 2, 3]).buffer,
+      type: 'public-key',
+      authenticatorAttachment: 'cross-platform',
+      getClientExtensionResults: () => ({ credProps: { rk: true } }),
+      response: {
+        clientDataJSON: new Uint8Array([123, 125]).buffer, // "{}"
+        attestationObject: new Uint8Array([9, 10]).buffer,
+        getTransports: () => ['usb'],
+      },
+    }));
+    const fallbackGetMock = vi.fn(async () => ({
+      id: 'cred-fallback-1',
+      rawId: new Uint8Array([1, 2, 3]).buffer,
+      type: 'public-key',
+      authenticatorAttachment: null,
+      getClientExtensionResults: () => ({}),
+      response: {
+        clientDataJSON: new Uint8Array([123, 125]).buffer,
+        authenticatorData: new Uint8Array([4, 5]).buffer,
+        signature: new Uint8Array([6, 7]).buffer,
+        userHandle: new Uint8Array([8, 9]).buffer,
+      },
+    }));
+    Object.defineProperty(window, 'PublicKeyCredential', {
+      configurable: true,
+      value: function MockPkc() {},
+    });
+    Object.defineProperty(navigator, 'credentials', {
+      configurable: true,
+      value: { create: fallbackCreateMock, get: fallbackGetMock },
+    });
+
+    const fbCreated = await createPasskey({
+      challenge: 'AQID',
+      user: { id: 'BAUG', name: 'u', displayName: 'U' },
+      excludeCredentials: [{ type: 'public-key', id: 'Bwg' }],
+    });
+    expect(fbCreated.response.clientDataJSON).toBe('e30');
+    expect(fbCreated.response.attestationObject).toBe('CQo');
+    expect(fbCreated.response.transports).toEqual(['usb']);
+
+    const fbAsserted = await getPasskeyAssertion({
+      challenge: 'AQID',
+      allowCredentials: [{ type: 'public-key', id: 'Bwg' }],
+    });
+    expect(fbAsserted.response.authenticatorData).toBe('BAU');
+    expect(fbAsserted.response.signature).toBe('Bgc');
+    expect(fbAsserted.response.userHandle).toBe('CAk');
+
+    // 3. Corrupted proof (valid credential id, missing/corrupted clientDataJSON & signature) must be rejected
+    const loginOpts = await apiClient.loginOptions();
+    await expect(
+      apiClient.loginVerify({
+        ceremony_id: loginOpts.ceremony_id,
+        credential: {
+          id: MOCK_DEFAULT_PASSKEY_CRED_ID,
+          rawId: MOCK_DEFAULT_PASSKEY_CRED_ID,
+          type: 'public-key',
+          response: {
+            clientDataJSON: '',
+            authenticatorData: '',
+            signature: '',
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      problem: { status: 401, code: 'authentication_failed' },
+    });
   });
 });
 
