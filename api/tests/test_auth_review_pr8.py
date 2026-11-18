@@ -196,3 +196,57 @@ async def test_production_connections_verify_the_server_identity(monkeypatch, ur
     assert merged["sslmode"] == "verify-full"
     if "sslrootcert" in url:
         assert merged["sslrootcert"] == "/etc/ca.pem"
+
+
+def function_url_event(path, body="{}", method="POST", origin="http://localhost:5173"):
+    return {
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": path,
+        "rawQueryString": "",
+        "headers": {"origin": origin, "content-type": "application/json"},
+        "requestContext": {
+            "http": {
+                "method": method,
+                "path": path,
+                "sourceIp": "127.0.0.1",
+                "protocol": "HTTP/1.1",
+            }
+        },
+        "body": body,
+        "isBase64Encoded": False,
+    }
+
+
+@pytest.mark.integration
+async def test_unexpected_failures_are_contained_before_the_adapter_logs(env, monkeypatch, caplog):
+    """8-5: Mangum probe: a failure carrying a secret gives sanitized no-store problem+json."""
+    import json
+    import logging
+
+    from mangum import Mangum
+
+    from app import passkeys
+
+    secret = "CHALLENGE-SECRET-8f3a"
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError(f"DETAIL: Failing row contains ({secret})")
+
+    monkeypatch.setattr(passkeys, "create_ceremony", explode)
+    handler = Mangum(env["app"], lifespan="off")
+    caplog.set_level(logging.DEBUG)
+
+    def invoke():
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        return handler(function_url_event("/api/v1/auth/login/options"), None)
+
+    result = await asyncio.to_thread(invoke)
+    assert result["statusCode"] == 500
+    headers = {k.lower(): v for k, v in result["headers"].items()}
+    assert headers["content-type"].startswith("application/problem+json")
+    assert headers["cache-control"] == "no-store"
+    assert json.loads(result["body"])["code"] == "internal_error"
+    assert secret not in result["body"]
+    assert secret not in caplog.text
+    assert "Traceback" not in caplog.text
