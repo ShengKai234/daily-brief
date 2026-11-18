@@ -1,0 +1,6 @@
+# Image gets only pyproject.toml, uv.lock and app/ (AGENTS.md "Never").
+*
+!pyproject.toml
+!uv.lock
+!app/
+app/**/__pycache__
