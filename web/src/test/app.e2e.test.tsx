@@ -586,37 +586,35 @@ describe('End-to-end user flows against the mock API', () => {
 
   it('loads and displays the finished brief after Generate now succeeds even when getReport resolves asynchronously after a network delay (REVIEWS 5-1)', async () => {
     const user = userEvent.setup();
+    renderApp(['/']);
+
+    await user.click(
+      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
+    );
+
+    const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
+
+    // Switch to an empty date first so the page shows "No Reports for 2026-11-01", matching the proof run
+    const dateInput = screen.getByLabelText(/Report Date/i);
+    await user.clear(dateInput);
+    await user.type(dateInput, '2026-11-01');
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /No Reports for 2026-11-01/i }),
+      ).toBeInTheDocument();
+    });
+
     const originalGetReport = apiClient.getReport.bind(apiClient);
     const getReportSpy = vi
       .spyOn(apiClient, 'getReport')
       .mockImplementation(async (token, reportId) => {
-        // In a real browser, React flushes the setActiveJob(updated) re-render and effect cleanup
-        // while the network request for GET /v1/reports/{id} is still in flight.
-        await act(async () => {
-          await new Promise((resolve) => window.setTimeout(resolve, 20));
-        });
+        // Flush any state updates queued before getReport was awaited (simulating browser render while fetch is in flight)
+        act(() => {});
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
         return originalGetReport(token, reportId);
       });
 
     try {
-      renderApp(['/']);
-
-      await user.click(
-        screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-      );
-
-      const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
-
-      // Switch to an empty date first so the page shows "No Reports for 2026-11-01", matching the proof run
-      const dateInput = screen.getByLabelText(/Report Date/i);
-      await user.clear(dateInput);
-      await user.type(dateInput, '2026-11-01');
-      await waitFor(() => {
-        expect(
-          screen.getByRole('heading', { name: /No Reports for 2026-11-01/i }),
-        ).toBeInTheDocument();
-      });
-
       setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
       await user.click(generateBtn);
 
