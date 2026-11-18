@@ -6,6 +6,7 @@ routes' dependencies afterwards. Adds `Cache-Control: no-store` to every /api re
 /internal is not checked for Origin.
 """
 
+import logging
 import re
 
 from app.problems import problem_response
@@ -37,7 +38,24 @@ class RequestGuard:
             rejected, receive = await self.check_v1(scope, receive, path)
             if rejected is not None:
                 return await rejected(scope, receive, send_no_store)
-        return await self.app(scope, receive, send_no_store)
+        started = False
+
+        async def tracking_send(message):
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send_no_store(message)
+
+        try:
+            return await self.app(scope, receive, tracking_send)
+        except Exception as exc:
+            # Contain unexpected failures here: the adapter would log the original text, which can
+            # carry database diagnostics (for example a row with a challenge). Log only the type.
+            logging.getLogger(__name__).error("Unhandled error (%s)", type(exc).__name__)
+            if started:
+                return None
+            return await problem_response(500, "internal_error", "Internal error")(
+                scope, receive, send_no_store
+            )
 
     async def check_v1(self, scope, receive, path):
         headers = scope["headers"]

@@ -277,8 +277,8 @@ async def test_a_crash_before_commit_leaves_nothing_behind(env, monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(passkeys, "insert_credential", boom)
-        with pytest.raises(RuntimeError):
-            await browser.post("/v1/auth/registration/verify", json=body, contract=False)
+        crashed = await browser.post("/v1/auth/registration/verify", json=body, contract=False)
+        assert (crashed.status_code, crashed.json()["code"]) == (500, "internal_error")
     assert len(await rows(env, "SELECT 1 FROM profiles")) == 1
     assert await rows(env, "SELECT 1 FROM passkey_credentials") == []
     assert (await one(env, "SELECT used_at FROM enrollment_tokens"))["used_at"] is None
