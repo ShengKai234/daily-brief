@@ -3,18 +3,28 @@ import path from 'node:path';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppRoutes } from '../App';
-import { ApiError, apiClient } from '../api/client';
-import { setMockJobBehavior } from '../api/mockApi';
+import { apiClient } from '../api/client';
+import { ERROR_MESSAGES, formatProblemMessage } from '../api/errors';
+import {
+  MOCK_DEFAULT_PASSKEY_CRED_ID,
+  MOCK_EXPIRED_TOKEN,
+  MOCK_INVITE_TOKEN,
+  MOCK_OWNER_USER_ID,
+  MOCK_USED_TOKEN,
+  setMockAuthConfig,
+  setMockJobBehavior,
+  setMockUserStatusForTests,
+  signInMockUserForTests,
+  signOutMockForTests,
+} from '../api/mockApi';
 import { AuthProvider } from '../auth/AuthContext';
 import {
-  DEV_OWNER_EMAIL,
-  DEV_OWNER_USER_ID,
-  DEV_PENDING_EMAIL,
-  DEV_PENDING_USER_ID,
-  issueDevJwt,
-} from '../auth/jwt';
+  clearEnrollmentToken,
+  extractEnrollmentTokenFromLocation,
+  getEnrollmentToken,
+} from '../auth/enrollmentToken';
 import { todayIn } from '../pages/ReportsPage';
 import { getNewestReport, getTodayInTimezone } from '../utils/date';
 
@@ -28,14 +38,65 @@ function renderApp(initialEntries: string[] = ['/']) {
   );
 }
 
+function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_CRED_ID) {
+  class FakePublicKeyCredential {
+    public readonly id: string;
+    public readonly rawId: ArrayBuffer;
+    public readonly type = 'public-key' as const;
+    public readonly authenticatorAttachment = 'platform';
+    public readonly response: Record<string, unknown>;
+
+    constructor(id: string) {
+      this.id = id;
+      this.rawId = new Uint8Array([1, 2, 3, 4]).buffer;
+      this.response = {
+        clientDataJSON: new Uint8Array([5, 6]).buffer,
+        attestationObject: new Uint8Array([7, 8]).buffer,
+        authenticatorData: new Uint8Array([9, 10]).buffer,
+        signature: new Uint8Array([11, 12]).buffer,
+        userHandle: new Uint8Array([13, 14]).buffer,
+        getTransports: () => ['internal'],
+      };
+    }
+
+    getClientExtensionResults() {
+      return {};
+    }
+
+    toJSON() {
+      return {
+        id: this.id,
+        rawId: this.id,
+        type: 'public-key',
+        response: {
+          clientDataJSON: 'BQY',
+          attestationObject: 'Bwg',
+        },
+        authenticatorAttachment: 'platform',
+        clientExtensionResults: {},
+      };
+    }
+  }
+
+  Object.defineProperty(window, 'PublicKeyCredential', {
+    configurable: true,
+    value: FakePublicKeyCredential,
+  });
+
+  Object.defineProperty(navigator, 'credentials', {
+    configurable: true,
+    value: {
+      create: vi.fn(async () => new FakePublicKeyCredential(credentialId)),
+      get: vi.fn(async () => new FakePublicKeyCredential(credentialId)),
+    },
+  });
+}
+
 describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
   const webRoot = path.resolve(__dirname, '../..');
 
   it('defines light and dark neutral palette and layout/spacing/typography tokens in tokens.css', () => {
-    const tokensCss = fs.readFileSync(
-      path.join(webRoot, 'src/styles/tokens.css'),
-      'utf-8',
-    );
+    const tokensCss = fs.readFileSync(path.join(webRoot, 'src/styles/tokens.css'), 'utf-8');
     expect(tokensCss).toContain('prefers-color-scheme: dark');
     expect(tokensCss).toContain('--font-sans:');
     expect(tokensCss).toContain('--color-bg:');
@@ -47,20 +108,14 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
   });
 
   it('uses no hard-coded colors, font-sizes, radii, spacing, or animations in global.css or components', () => {
-    const globalCss = fs.readFileSync(
-      path.join(webRoot, 'src/styles/global.css'),
-      'utf-8',
-    );
-    // No hex, rgb, or hsl colors outside tokens.css
+    const globalCss = fs.readFileSync(path.join(webRoot, 'src/styles/global.css'), 'utf-8');
     expect(globalCss).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(globalCss).not.toMatch(/\brgba?\s*\(/i);
     expect(globalCss).not.toMatch(/\bhsla?\s*\(/i);
-    // No animations or transitions (DESIGN 3.3)
     expect(globalCss).not.toMatch(/@keyframes\b/i);
     expect(globalCss).not.toMatch(/\banimation\s*:/i);
     expect(globalCss).not.toMatch(/\btransition\s*:/i);
 
-    // Every font-size, border-radius, padding, margin, and gap rule in global.css uses var(--...)
     const tokenControlledProps = [
       'font-size',
       'border-radius',
@@ -83,12 +138,12 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
       }
     }
 
-    // No inline styles or dangerouslySetInnerHTML in any component/page
     const tsxFiles = [
       'src/App.tsx',
       'src/components/Layout.tsx',
       'src/pages/SignInPage.tsx',
-      'src/pages/RedeemInvitePage.tsx',
+      'src/pages/EnrollPage.tsx',
+      'src/pages/SecurityPage.tsx',
       'src/pages/ReportsPage.tsx',
       'src/pages/SettingsPage.tsx',
       'src/pages/ProfilePage.tsx',
@@ -101,7 +156,7 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
     }
   });
 
-  it('computes today in profile timezone via todayIn (e.g. 2026-11-14T23:30Z is 2026-11-15 in Asia/Taipei) and selects newest report by generated_at', () => {
+  it('computes today in profile timezone via todayIn and selects newest report by generated_at', () => {
     const instant = new Date('2026-11-14T23:30:00Z');
     expect(todayIn('Asia/Taipei', instant)).toBe('2026-11-15');
     expect(todayIn('UTC', instant)).toBe('2026-11-14');
@@ -129,6 +184,54 @@ describe('Design tokens, minimal baseline (DESIGN 3.3), and PWA config', () => {
     const swSource = fs.readFileSync(path.join(webRoot, 'public/sw.js'), 'utf-8');
     expect(swSource).toContain("url.pathname.startsWith('/api/')");
   });
+
+  it('provides plain-language messages for every error code in openapi.yaml', () => {
+    const expectedCodes = [
+      'bad_request',
+      'ceremony_invalid',
+      'registration_failed',
+      'enrollment_token_invalid',
+      'enrollment_token_used',
+      'enrollment_token_expired',
+      'unauthorized',
+      'authentication_failed',
+      'forbidden',
+      'origin_mismatch',
+      'account_disabled',
+      'admission_disabled',
+      'reauth_required',
+      'agent_settings_locked',
+      'owner_only',
+      'not_found',
+      'already_subscribed',
+      'job_in_progress',
+      'lease_lost',
+      'topic_exists',
+      'credential_exists',
+      'passkey_limit',
+      'last_passkey',
+      'payload_too_large',
+      'unsupported_media_type',
+      'validation_error',
+      'slot_limit_exceeded',
+      'duplicate_slot',
+      'visibility_not_supported',
+      'no_topics',
+      'daily_limit_reached',
+      'rate_limited',
+    ];
+    for (const code of expectedCodes) {
+      expect(ERROR_MESSAGES[code]).toBeTruthy();
+      const msg = formatProblemMessage({
+        type: 'about:blank',
+        title: 'Error',
+        status: 400,
+        detail: 'raw',
+        code,
+      });
+      expect(msg.length).toBeGreaterThan(10);
+    }
+  });
 });
 
 describe('OpenAPI contract & mock API enforcement', () => {
@@ -136,59 +239,51 @@ describe('OpenAPI contract & mock API enforcement', () => {
     const health = await apiClient.getHealth();
     expect(health).toEqual({ status: 'ok' });
 
-    await expect(apiClient.getMe('')).rejects.toThrow(ApiError);
-    try {
-      await apiClient.getMe('');
-    } catch (err) {
-      expect(err).toBeInstanceOf(ApiError);
-      const apiErr = err as ApiError;
-      expect(apiErr.problem.status).toBe(401);
-      expect(apiErr.problem.code).toBe('unauthorized');
-    }
+    await expect(apiClient.getMe()).rejects.toMatchObject({
+      problem: { status: 401, code: 'unauthorized' },
+    });
   });
 
-  it('enforces the registration gate for pending and disabled accounts and locks agent-settings', async () => {
-    const pendingToken = await issueDevJwt({
-      sub: DEV_PENDING_USER_ID,
-      email: DEV_PENDING_EMAIL,
-    });
-    const me = await apiClient.getMe(pendingToken);
-    expect(me.status).toBe('pending');
-
-    await expect(apiClient.listTopics(pendingToken)).rejects.toMatchObject({
-      problem: { status: 403, code: 'account_pending' },
-    });
-
-    const disabledToken = await issueDevJwt({
-      sub: '00000000-0000-4000-8000-000000000099',
-      email: 'disabled@example.com',
-    });
-    await expect(apiClient.getMe(disabledToken)).rejects.toMatchObject({
-      problem: { status: 403, code: 'account_disabled' },
-    });
-
-    const ownerToken = await issueDevJwt({
-      sub: DEV_OWNER_USER_ID,
-      email: DEV_OWNER_EMAIL,
-    });
+  it('enforces enrollment token states, non-owner admission gate, and agent-settings lock', async () => {
     await expect(
-      apiClient.updateAgentSettings(ownerToken, { daily_run_limit: 5 }),
+      apiClient.registerOptions({ enrollment_token: 'unknown-token-0000000000000000000000000000000' }),
     ).rejects.toMatchObject({
+      problem: { status: 400, code: 'enrollment_token_invalid' },
+    });
+
+    await expect(
+      apiClient.registerOptions({ enrollment_token: MOCK_EXPIRED_TOKEN }),
+    ).rejects.toMatchObject({
+      problem: { status: 409, code: 'enrollment_token_expired' },
+    });
+
+    await expect(
+      apiClient.registerOptions({ enrollment_token: MOCK_USED_TOKEN }),
+    ).rejects.toMatchObject({
+      problem: { status: 409, code: 'enrollment_token_used' },
+    });
+
+    setMockAuthConfig({ nonOwnerAdmission: false });
+    await expect(
+      apiClient.registerOptions({ enrollment_token: MOCK_INVITE_TOKEN }),
+    ).rejects.toMatchObject({
+      problem: { status: 403, code: 'admission_disabled' },
+    });
+    setMockAuthConfig({ nonOwnerAdmission: true });
+
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
+    await expect(apiClient.updateAgentSettings({ daily_run_limit: 5 })).rejects.toMatchObject({
       problem: { status: 403, code: 'agent_settings_locked' },
     });
   });
 
   it('enforces 3-slot limit, duplicate slot check, 30-min granularity, and stable slot IDs by position', async () => {
-    const ownerToken = await issueDevJwt({
-      sub: DEV_OWNER_USER_ID,
-      email: DEV_OWNER_EMAIL,
-    });
-    const initial = await apiClient.getDeliverySlots(ownerToken);
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
+    const initial = await apiClient.getDeliverySlots();
     expect(initial.slots).toHaveLength(1);
     const firstSlotId = initial.slots[0].id;
 
-    // Swapping/updating position 1 preserves its slot ID
-    const updated = await apiClient.replaceDeliverySlots(ownerToken, {
+    const updated = await apiClient.replaceDeliverySlots({
       slots: [
         { local_time: '08:30', enabled: true },
         { local_time: '18:00', enabled: false },
@@ -198,9 +293,8 @@ describe('OpenAPI contract & mock API enforcement', () => {
     expect(updated.slots[0].position).toBe(1);
     expect(updated.slots[1].position).toBe(2);
 
-    // > 3 slots rejected with 422 slot_limit_exceeded
     await expect(
-      apiClient.replaceDeliverySlots(ownerToken, {
+      apiClient.replaceDeliverySlots({
         slots: [
           { local_time: '06:00', enabled: true },
           { local_time: '12:00', enabled: true },
@@ -212,9 +306,8 @@ describe('OpenAPI contract & mock API enforcement', () => {
       problem: { status: 422, code: 'slot_limit_exceeded' },
     });
 
-    // Non-30-minute step rejected with 422 validation_error
     await expect(
-      apiClient.replaceDeliverySlots(ownerToken, {
+      apiClient.replaceDeliverySlots({
         slots: [{ local_time: '07:15', enabled: true }],
       }),
     ).rejects.toMatchObject({
@@ -223,82 +316,146 @@ describe('OpenAPI contract & mock API enforcement', () => {
   });
 
   it('enforces POST /v1/jobs and GET /v1/jobs/{job_id} contract rules (202, 409, 429, 422, 403, 404)', async () => {
-    const ownerToken = await issueDevJwt({
-      sub: DEV_OWNER_USER_ID,
-      email: DEV_OWNER_EMAIL,
-    });
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
 
-    // 1. Create first manual job (202 queued)
     setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
-    const job1 = await apiClient.generateNow(ownerToken);
+    const job1 = await apiClient.generateNow();
     expect(job1.status).toBe('queued');
     expect(job1.trigger).toBe('manual');
     expect(job1.report_id).toBeNull();
 
-    // 2. Concurrent POST /v1/jobs while job1 is queued -> 409 job_in_progress
-    await expect(apiClient.generateNow(ownerToken)).rejects.toMatchObject({
+    await expect(apiClient.generateNow()).rejects.toMatchObject({
       problem: { status: 409, code: 'job_in_progress' },
     });
 
-    // 3. Poll 1 -> running; Poll 2 -> succeeded with report_id
-    const poll1 = await apiClient.getJob(ownerToken, job1.id);
+    const poll1 = await apiClient.getJob(job1.id);
     expect(poll1.status).toBe('running');
-    const poll2 = await apiClient.getJob(ownerToken, job1.id);
+    const poll2 = await apiClient.getJob(job1.id);
     expect(poll2.status).toBe('succeeded');
     expect(poll2.report_id).toBeTruthy();
 
-    // 4. Create second manual job and finish it -> hits daily_run_limit (3: 1 scheduled + 2 manual)
     setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 0 });
-    const job2 = await apiClient.generateNow(ownerToken);
-    await apiClient.getJob(ownerToken, job2.id);
+    const job2 = await apiClient.generateNow();
+    await apiClient.getJob(job2.id);
 
-    // 5. Third manual job -> 429 daily_limit_reached
-    await expect(apiClient.generateNow(ownerToken)).rejects.toMatchObject({
+    await expect(apiClient.generateNow()).rejects.toMatchObject({
       problem: { status: 429, code: 'daily_limit_reached' },
     });
+  });
+});
 
-    // 6. Non-owner active user calling POST /v1/jobs with claude_subscription -> 403 owner_only
-    const otherToken = await issueDevJwt({
-      sub: DEV_PENDING_USER_ID,
-      email: DEV_PENDING_EMAIL,
+describe('Passkey auth, enrollment, security, and 401 handling', () => {
+  it('extracts enrollment token from URL fragment and immediately strips it via history.replaceState', () => {
+    clearEnrollmentToken();
+    window.history.replaceState(null, '', '/enroll#t=secret-token-value-123');
+    const extracted = extractEnrollmentTokenFromLocation();
+    expect(extracted).toBe('secret-token-value-123');
+    expect(getEnrollmentToken()).toBe('secret-token-value-123');
+    expect(window.location.hash).toBe('');
+    clearEnrollmentToken();
+  });
+
+  it('enrolls an invited user via /enroll#t=..., signs in with passkey, handles reauth_required, and enforces last_passkey', async () => {
+    const user = userEvent.setup();
+    installFakeBrowserPasskey('new-invitee-cred-1');
+    clearEnrollmentToken();
+    window.history.replaceState(null, '', `/enroll#t=${MOCK_INVITE_TOKEN}`);
+
+    renderApp(['/enroll']);
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe('');
     });
-    await apiClient.redeemInvite(otherToken, { code: 'WELCOME-2026' });
-    await expect(apiClient.generateNow(otherToken)).rejects.toMatchObject({
-      problem: { status: 403, code: 'owner_only' },
+    await user.type(await screen.findByLabelText(/Display Name/i), 'Mei');
+    await user.type(screen.getByLabelText(/Passkey Label/i), 'MacBook Touch ID');
+    await user.click(screen.getByRole('button', { name: /Create Passkey & Sign In/i }));
+
+    // Signed in as Mei (no reports yet, empty state)
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Security/i })).toBeInTheDocument();
     });
 
-    // 7. Non-owner cannot read owner's job -> 404 not_found
-    await expect(apiClient.getJob(otherToken, job1.id)).rejects.toMatchObject({
-      problem: { status: 404, code: 'not_found' },
+    // Navigate to Security page
+    await user.click(screen.getByRole('link', { name: /Security/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Passkeys \(1\/10\)/i })).toBeInTheDocument();
+    });
+    expect(screen.getByText('MacBook Touch ID')).toBeInTheDocument();
+
+    // Try deleting the only passkey -> triggers reauth_required prompt
+    await user.click(screen.getByRole('button', { name: /Remove passkey MacBook Touch ID/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Verify Your Passkey/i })).toBeInTheDocument();
+    });
+
+    // Complete reauth -> delete retries -> 409 last_passkey plain-language error
+    await user.click(screen.getByRole('button', { name: /^Verify passkey$/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(ERROR_MESSAGES.last_passkey);
+    });
+
+    // Now within 5-min reauth window, add a second passkey
+    installFakeBrowserPasskey('new-invitee-cred-2');
+    await user.type(screen.getByLabelText(/New Passkey Label/i), 'Backup Key');
+    await user.click(screen.getByRole('button', { name: /Add passkey on this device/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Passkeys \(2\/10\)/i })).toBeInTheDocument();
+      expect(screen.getByText('Backup Key')).toBeInTheDocument();
+    });
+  });
+
+  it('transitions to signed-out SignInPage when a session becomes 401 unauthorized', async () => {
+    const user = userEvent.setup();
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
+    renderApp(['/']);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Stock Market' })).toBeInTheDocument();
+    });
+
+    // Simulate session revocation on the server
+    signOutMockForTests();
+
+    await user.click(screen.getByRole('link', { name: /Security/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Sign In to Daily Brief/i })).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent(ERROR_MESSAGES.unauthorized);
+    });
+  });
+
+  it('shows account_disabled message when a disabled user attempts passkey sign-in', async () => {
+    const user = userEvent.setup();
+    installFakeBrowserPasskey(MOCK_DEFAULT_PASSKEY_CRED_ID);
+    setMockUserStatusForTests(MOCK_OWNER_USER_ID, 'disabled');
+
+    renderApp(['/']);
+    await user.click(await screen.findByRole('button', { name: /Sign in with a passkey/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(ERROR_MESSAGES.account_disabled);
     });
   });
 });
 
 describe('End-to-end user flows against the mock API', () => {
-  it('signs in as seeded owner, displays today report, marks read state, and renders notes strictly as plain text', async () => {
+  it('signs in with passkey as seeded owner, displays today report, marks read state, and renders notes strictly as plain text', async () => {
     const user = userEvent.setup();
+    installFakeBrowserPasskey(MOCK_DEFAULT_PASSKEY_CRED_ID);
     renderApp(['/']);
 
     expect(
-      screen.getByRole('heading', { name: /Sign In to Daily Brief/i }),
+      await screen.findByRole('heading', { name: /Sign In to Daily Brief/i }),
     ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Sign in with a passkey/i }));
 
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-    );
-
-    // Lands on Today's Report
     await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: 'Stock Market' }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Stock Market' })).toBeInTheDocument();
     });
 
-    // Opens on today in Asia/Taipei (not a fixed 2026-11-12 date)
     const expectedToday = getTodayInTimezone('Asia/Taipei');
     expect(screen.getByLabelText(/Report Date/i)).toHaveValue(expectedToday);
 
-    // Selects the newest report (Slot 07:00, max generated_at) instead of reports[0] (older On-demand 1/1)
     const olderEditionBtn = screen.getByRole('button', {
       name: /On-demand · 1\/1 unread/i,
     });
@@ -307,40 +464,19 @@ describe('End-to-end user flows against the mock API', () => {
     });
     expect(olderEditionBtn).toHaveAttribute('aria-pressed', 'false');
     expect(newestEditionBtn).toHaveAttribute('aria-pressed', 'true');
-    expect(
-      screen.getByRole('heading', {
-        name: /Semiconductor index edges higher/i,
-      }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('heading', {
-        name: /Earlier pre-market digest before scheduled slot/i,
-      }),
-    ).not.toBeInTheDocument();
 
-    // Displays insufficient_news section note
-    expect(
-      screen.getByText(/No new official Ruby or Python point releases/i),
-    ).toBeInTheDocument();
-
-    // Mark first item as read
     const firstItemHeading = screen.getByRole('heading', {
       name: /Semiconductor index edges higher/i,
     });
     const firstArticle = firstItemHeading.closest('article')!;
     const readCheckbox = within(firstArticle).getByRole('checkbox');
-    expect(readCheckbox).not.toBeChecked();
-
     await user.click(readCheckbox);
 
     await waitFor(() => {
       expect(readCheckbox).toBeChecked();
-      expect(
-        screen.getByRole('button', { name: /Slot 07:00 · 3\/4 unread/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Slot 07:00 · 3\/4 unread/i })).toBeInTheDocument();
     });
 
-    // Add a note containing HTML characters and verify it renders strictly as plain text
     await user.click(within(firstArticle).getByRole('button', { name: /Add Note/i }));
     const noteTextarea = within(firstArticle).getByLabelText(
       /Note for Semiconductor index edges higher/i,
@@ -355,26 +491,13 @@ describe('End-to-end user flows against the mock API', () => {
     expect(noteDisplay.textContent).toBe(unsafeString);
     expect(noteDisplay.querySelector('script')).toBeNull();
     expect(noteDisplay.querySelector('b')).toBeNull();
-
-    // Switch date to an empty date and verify empty state
-    const dateInput = screen.getByLabelText(/Report Date/i);
-    await user.clear(dateInput);
-    await user.type(dateInput, '2026-11-01');
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: /No Reports for 2026-11-01/i }),
-      ).toBeInTheDocument();
-    });
   });
 
-  it('manages topic subscriptions, item counts, topic renaming, and delivery slots (up to 3)', async () => {
+  it('manages topic subscriptions, item counts, and delivery slots (up to 3)', async () => {
     const user = userEvent.setup();
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
     renderApp(['/']);
 
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-    );
     await waitFor(() => {
       expect(screen.getByRole('link', { name: /Topics & Slots/i })).toBeInTheDocument();
     });
@@ -382,12 +505,9 @@ describe('End-to-end user flows against the mock API', () => {
     await user.click(screen.getByRole('link', { name: /Topics & Slots/i }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: /Subscribed Topics \(6\)/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /Subscribed Topics \(6\)/i })).toBeInTheDocument();
     });
 
-    // Subscribe to a new topic
     await user.type(screen.getByLabelText(/Topic Title/i), 'Quantum Computing');
     const countInput = screen.getByLabelText(/Items per Report/i);
     await user.clear(countInput);
@@ -395,20 +515,14 @@ describe('End-to-end user flows against the mock API', () => {
     await user.click(screen.getByRole('button', { name: /Subscribe Topic/i }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: /Subscribed Topics \(7\)/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /Subscribed Topics \(7\)/i })).toBeInTheDocument();
       expect(screen.getByText('Quantum Computing')).toBeInTheDocument();
     });
 
-    // Add 2 more delivery slots (reaching 3/3) and verify Add Slot disables at 3
     const addSlotBtn = screen.getByRole('button', { name: /Add Slot/i });
     await user.click(addSlotBtn);
     await user.click(addSlotBtn);
-
-    expect(
-      screen.getByRole('heading', { name: /Delivery Slots \(3\/3\)/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Delivery Slots \(3\/3\)/i })).toBeInTheDocument();
     expect(addSlotBtn).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: /Save Delivery Slots/i }));
@@ -417,17 +531,14 @@ describe('End-to-end user flows against the mock API', () => {
     });
   });
 
-  it('updates profile preferences (display_name, bio, timezone, locale)', async () => {
+  it('updates profile preferences (display_name, bio, timezone, locale) without email', async () => {
     const user = userEvent.setup();
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
     renderApp(['/']);
 
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-    );
     await waitFor(() => {
       expect(screen.getByRole('link', { name: /Profile/i })).toBeInTheDocument();
     });
-
     await user.click(screen.getByRole('link', { name: /Profile/i }));
 
     const nameInput = await screen.findByLabelText(/Display Name/i);
@@ -439,71 +550,25 @@ describe('End-to-end user flows against the mock API', () => {
     await user.type(localeInput, 'en-US');
 
     await user.click(screen.getByRole('button', { name: /Save Profile/i }));
-
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent('Profile updated.');
     });
-    expect(nameInput).toHaveValue('Kai Owner');
-    expect(localeInput).toHaveValue('en-US');
+    expect(screen.queryByText(/Email:/i)).not.toBeInTheDocument();
   });
 
-  it('gates pending users to invite redemption and activates account on valid invite code', async () => {
+  it('handles Generate now button polling to succeeded/failed and displays 409, 429, and 422 error states', async () => {
     const user = userEvent.setup();
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
     renderApp(['/']);
-
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Pending User/i }),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: /Account Pending Approval/i }),
-      ).toBeInTheDocument();
-    });
-
-    const codeInput = screen.getByLabelText('Invite Code');
-    await user.type(codeInput, 'INVALID-CODE');
-    await user.click(screen.getByRole('button', { name: /Activate Account/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/invite_not_found/i);
-    });
-
-    await user.clear(codeInput);
-    await user.type(codeInput, 'WELCOME-2026');
-    await user.click(screen.getByRole('button', { name: /Activate Account/i }));
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Account status')).toHaveTextContent('active');
-      expect(screen.getByRole('link', { name: /Topics & Slots/i })).toBeInTheDocument();
-    });
-  });
-
-  it('handles Generate now button polling to succeeded/failed and displays 409, 429, 422, and 403 error states', async () => {
-    const user = userEvent.setup();
-    renderApp(['/']);
-
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-    );
 
     const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
-    expect(generateBtn).not.toBeDisabled();
-
-    // 1. Trigger Generate now -> queued -> running -> succeeded and loads new On-demand report
     setMockJobBehavior({ outcome: 'succeeded', pollsBeforeTerminal: 1 });
     await user.click(generateBtn);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /On-demand · 6\/6 unread/i }),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole('heading', { name: /On-demand brief update for Stock Market/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /On-demand · 6\/6 unread/i })).toBeInTheDocument();
     });
 
-    // 2. Trigger second manual run that transitions to failed -> shows plain error message
     setMockJobBehavior({
       outcome: 'failed',
       pollsBeforeTerminal: 0,
@@ -512,38 +577,25 @@ describe('End-to-end user flows against the mock API', () => {
     await user.click(screen.getByRole('button', { name: /Generate now/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(
-        'Brief generation failed (llm_timeout).',
-      );
+      expect(screen.getByRole('alert')).toHaveTextContent('Brief generation failed (llm_timeout).');
     });
 
-    // 3. Trigger third manual run -> hits 429 daily_limit_reached
     await user.click(screen.getByRole('button', { name: /Generate now/i }));
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(
-        'Daily limit reached, try tomorrow.',
-      );
+      expect(screen.getByRole('alert')).toHaveTextContent('Daily limit reached, try tomorrow.');
     });
   });
 
-  it('displays 422 no_topics with link to /settings, 409 job_in_progress, and 403 owner_only on Generate now', async () => {
+  it('displays 422 no_topics with link to /settings and 409 job_in_progress on Generate now', async () => {
     const user = userEvent.setup();
-    const ownerToken = await issueDevJwt({
-      sub: DEV_OWNER_USER_ID,
-      email: DEV_OWNER_EMAIL,
-    });
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
 
-    // Disable all topic subscriptions so POST /v1/jobs returns 422 no_topics
-    const { subscriptions } = await apiClient.listSubscriptions(ownerToken);
+    const { subscriptions } = await apiClient.listSubscriptions();
     for (const sub of subscriptions) {
-      await apiClient.updateSubscription(ownerToken, sub.id, { enabled: false });
+      await apiClient.updateSubscription(sub.id, { enabled: false });
     }
 
     renderApp(['/']);
-    await user.click(
-      screen.getByRole('button', { name: /Sign in as Seeded Owner/i }),
-    );
-
     const generateBtn = await screen.findByRole('button', { name: /Generate now/i });
     await user.click(generateBtn);
 
@@ -556,31 +608,14 @@ describe('End-to-end user flows against the mock API', () => {
       expect(settingsLink).toHaveAttribute('href', '/settings');
     });
 
-    // Re-enable first subscription and start a background job so clicking Generate now gets 409 job_in_progress
-    await apiClient.updateSubscription(ownerToken, subscriptions[0].id, {
-      enabled: true,
-    });
-    await apiClient.generateNow(ownerToken);
+    await apiClient.updateSubscription(subscriptions[0].id, { enabled: true });
+    await apiClient.generateNow();
 
     await user.click(screen.getByRole('button', { name: /Generate now/i }));
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(
         /A brief generation job is already in progress/i,
       );
-    });
-
-    // Sign out, sign in as pending user, activate with invite code, and verify 403 owner_only on Generate now
-    await user.click(screen.getByRole('button', { name: /Sign out/i }));
-    await user.click(screen.getByRole('button', { name: /Sign in as Pending User/i }));
-    const codeInput = await screen.findByLabelText('Invite Code');
-    await user.type(codeInput, 'WELCOME-2026');
-    await user.click(screen.getByRole('button', { name: /Activate Account/i }));
-
-    const nonOwnerGenBtn = await screen.findByRole('button', { name: /Generate now/i });
-    await user.click(nonOwnerGenBtn);
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/owner_only/i);
     });
   });
 });

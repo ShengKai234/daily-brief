@@ -4,14 +4,14 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 30000,
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: 'http://localhost:4173',
     viewport: { width: 375, height: 667 },
     channel: 'chrome',
     headless: true,
   },
   webServer: {
-    command: 'npx vite --host 127.0.0.1 --port 4173',
-    url: 'http://127.0.0.1:4173',
+    command: 'npx vite --host localhost --port 4173',
+    url: 'http://localhost:4173',
     reuseExistingServer: !process.env.CI,
     env: {
       VITE_USE_MOCK_API: 'true',

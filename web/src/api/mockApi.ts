@@ -1,23 +1,23 @@
-import {
-  DEV_OWNER_EMAIL,
-  DEV_OWNER_USER_ID,
-  decodeJwtClaims,
-} from '../auth/jwt';
 import { getTodayInTimezone } from '../utils/date';
 import type {
   AgentSettings,
+  CeremonyOptions,
+  CeremonyVerifyRequest,
   DeliverySlot,
   DeliverySlotSet,
   DeliverySlotsReplace,
   ItemMark,
   ItemMarkUpdate,
+  Passkey,
   Problem,
   Profile,
   ProfileUpdate,
-  RedeemInviteRequest,
+  RegistrationOptionsRequest,
+  RegistrationVerifyRequest,
   Report,
   ReportSection,
   ReportSummary,
+  Session,
   Subscription,
   SubscriptionCreate,
   SubscriptionUpdate,
@@ -27,12 +27,71 @@ import type {
   UserJob,
 } from './types';
 
+export const MOCK_OWNER_USER_ID = '00000000-0000-4000-8000-000000000001';
+export const MOCK_INVITE_TOKEN = 'invite-token-valid-00000000000000000000000000000001';
+export const MOCK_OWNER_RECOVERY_TOKEN = 'recovery-owner-0000000000000000000000000000000002';
+export const MOCK_EXPIRED_TOKEN = 'expired-token-00000000000000000000000000000000003';
+export const MOCK_USED_TOKEN = 'used-token-00000000000000000000000000000000000004';
+export const MOCK_DEFAULT_PASSKEY_CRED_ID = 'mock-owner-passkey-cred-1';
+
 export const DEFAULT_REPORT_DATE = getTodayInTimezone('Asia/Taipei');
 
 export interface MockJobBehavior {
   pollsBeforeTerminal?: number;
   outcome?: 'succeeded' | 'failed';
   errorCode?: string;
+}
+
+export interface MockAuthConfig {
+  nonOwnerAdmission?: boolean;
+  reauthTtlMs?: number;
+}
+
+interface StoredPasskey {
+  id: string;
+  userId: string;
+  credentialId: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  backupEligible: boolean;
+  backupState: boolean;
+  revokedAt: string | null;
+}
+
+interface StoredSession {
+  id: string;
+  userId: string;
+  passkeyId: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  reauthAtMs: number | null;
+  revokedAt: string | null;
+}
+
+interface StoredToken {
+  token: string;
+  purpose: 'invite' | 'recovery' | 'add_credential';
+  userId: string | null;
+  status: 'valid' | 'used' | 'expired' | 'revoked';
+  optionsCount: number;
+}
+
+interface StoredCeremony {
+  id: string;
+  purpose:
+    | 'register_invite'
+    | 'register_recovery'
+    | 'register_add'
+    | 'add_passkey'
+    | 'login'
+    | 'reauth';
+  userId: string | null;
+  pendingUserId: string | null;
+  enrollmentToken: string | null;
+  displayName: string | null;
+  sessionId: string | null;
+  consumed: boolean;
 }
 
 interface UserStore {
@@ -48,8 +107,11 @@ interface UserStore {
 
 interface MockDatabase {
   users: Record<string, UserStore>;
-  allowlistEmails: Set<string>;
-  validInviteCodes: Record<string, { status: 'valid' | 'expired' | 'exhausted' }>;
+  passkeys: StoredPasskey[];
+  sessions: StoredSession[];
+  tokens: Record<string, StoredToken>;
+  ceremonies: Record<string, StoredCeremony>;
+  activeSessionId: string | null;
 }
 
 const LOCAL_TIME_REGEX = /^([01][0-9]|2[0-3]):(00|30)$/;
@@ -231,8 +293,7 @@ function createInitialOwnerStore(): UserStore {
 
   return {
     profile: {
-      user_id: DEV_OWNER_USER_ID,
-      email: DEV_OWNER_EMAIL,
+      user_id: MOCK_OWNER_USER_ID,
       display_name: 'Owner',
       avatar_url: null,
       bio: 'Daily Brief owner account',
@@ -268,15 +329,54 @@ function createInitialOwnerStore(): UserStore {
 function createInitialDb(): MockDatabase {
   return {
     users: {
-      [DEV_OWNER_USER_ID]: createInitialOwnerStore(),
+      [MOCK_OWNER_USER_ID]: createInitialOwnerStore(),
     },
-    allowlistEmails: new Set([DEV_OWNER_EMAIL]),
-    validInviteCodes: {
-      'WELCOME-2026': { status: 'valid' },
-      'EXAMPLE-CODE': { status: 'valid' },
-      'EXPIRED-CODE': { status: 'expired' },
-      'USED-CODE': { status: 'exhausted' },
+    passkeys: [
+      {
+        id: '80000000-0000-4000-8000-000000000001',
+        userId: MOCK_OWNER_USER_ID,
+        credentialId: MOCK_DEFAULT_PASSKEY_CRED_ID,
+        label: 'Owner Passkey',
+        createdAt: '2026-11-01T00:00:00Z',
+        lastUsedAt: '2026-11-12T07:00:00Z',
+        backupEligible: true,
+        backupState: true,
+        revokedAt: null,
+      },
+    ],
+    sessions: [],
+    tokens: {
+      [MOCK_INVITE_TOKEN]: {
+        token: MOCK_INVITE_TOKEN,
+        purpose: 'invite',
+        userId: null,
+        status: 'valid',
+        optionsCount: 0,
+      },
+      [MOCK_OWNER_RECOVERY_TOKEN]: {
+        token: MOCK_OWNER_RECOVERY_TOKEN,
+        purpose: 'recovery',
+        userId: MOCK_OWNER_USER_ID,
+        status: 'valid',
+        optionsCount: 0,
+      },
+      [MOCK_EXPIRED_TOKEN]: {
+        token: MOCK_EXPIRED_TOKEN,
+        purpose: 'invite',
+        userId: null,
+        status: 'expired',
+        optionsCount: 0,
+      },
+      [MOCK_USED_TOKEN]: {
+        token: MOCK_USED_TOKEN,
+        purpose: 'invite',
+        userId: null,
+        status: 'used',
+        optionsCount: 1,
+      },
     },
+    ceremonies: {},
+    activeSessionId: null,
   };
 }
 
@@ -286,6 +386,10 @@ let mockJobBehavior: MockJobBehavior = {
   pollsBeforeTerminal: 0,
   outcome: 'succeeded',
   errorCode: 'worker_failed',
+};
+let mockAuthConfig: Required<MockAuthConfig> = {
+  nonOwnerAdmission: true,
+  reauthTtlMs: 5 * 60 * 1000,
 };
 let jobPollCounts: Record<string, number> = {};
 
@@ -303,6 +407,44 @@ export function setMockJobBehavior(behavior: MockJobBehavior): void {
   };
 }
 
+export function setMockAuthConfig(config: MockAuthConfig): void {
+  mockAuthConfig = {
+    nonOwnerAdmission: config.nonOwnerAdmission ?? mockAuthConfig.nonOwnerAdmission,
+    reauthTtlMs: config.reauthTtlMs ?? mockAuthConfig.reauthTtlMs,
+  };
+}
+
+export function signInMockUserForTests(
+  userId: string = MOCK_OWNER_USER_ID,
+  options?: { reauthenticated?: boolean },
+): string {
+  const pk = db.passkeys.find((p) => p.userId === userId && !p.revokedAt) ?? null;
+  const sessionId = nextUuid('85000000');
+  const now = nowIso();
+  db.sessions.push({
+    id: sessionId,
+    userId,
+    passkeyId: pk?.id ?? null,
+    createdAt: now,
+    lastSeenAt: now,
+    reauthAtMs: options?.reauthenticated ? Date.now() : null,
+    revokedAt: null,
+  });
+  db.activeSessionId = sessionId;
+  return sessionId;
+}
+
+export function setMockUserStatusForTests(userId: string, status: Profile['status']): void {
+  const store = db.users[userId];
+  if (store) {
+    store.profile.status = status;
+  }
+}
+
+export function signOutMockForTests(): void {
+  db.activeSessionId = null;
+}
+
 export function resetMockApiState(): void {
   db = createInitialDb();
   idCounter = 100;
@@ -310,6 +452,10 @@ export function resetMockApiState(): void {
     pollsBeforeTerminal: 0,
     outcome: 'succeeded',
     errorCode: 'worker_failed',
+  };
+  mockAuthConfig = {
+    nonOwnerAdmission: true,
+    reauthTtlMs: 5 * 60 * 1000,
   };
   jobPollCounts = {};
 }
@@ -342,30 +488,17 @@ function jsonResponse(status: number, data: unknown): Response {
   });
 }
 
-function getOrCreateUserStore(sub: string, email: string): UserStore {
-  const existing = db.users[sub];
-  if (existing) {
-    return existing;
-  }
+function createInvitedUserStore(userId: string, displayName: string): UserStore {
   const createdAt = nowIso();
-  const isDisabled = email.toLowerCase() === 'disabled@example.com';
-  const isAllowed = db.allowlistEmails.has(email.toLowerCase());
-  const status: Profile['status'] = isDisabled
-    ? 'disabled'
-    : isAllowed
-      ? 'active'
-      : 'pending';
-
   const newStore: UserStore = {
     profile: {
-      user_id: sub,
-      email,
-      display_name: email.split('@')[0] || 'User',
+      user_id: userId,
+      display_name: displayName,
       avatar_url: null,
       bio: '',
       timezone: 'Asia/Taipei',
       locale: 'zh-TW',
-      status,
+      status: 'active',
       created_at: createdAt,
       updated_at: createdAt,
     },
@@ -373,7 +506,7 @@ function getOrCreateUserStore(sub: string, email: string): UserStore {
     subscriptions: [],
     slots: [],
     agentSettings: {
-      runner: 'claude_subscription',
+      runner: 'anthropic_api',
       model: 'sonnet',
       daily_run_limit: 3,
     },
@@ -381,8 +514,63 @@ function getOrCreateUserStore(sub: string, email: string): UserStore {
     marks: {},
     jobs: [],
   };
-  db.users[sub] = newStore;
+  db.users[userId] = newStore;
   return newStore;
+}
+
+function getRpId(): string {
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    return window.location.hostname;
+  }
+  return 'localhost';
+}
+
+function makeChallengeBase64url(): string {
+  const bytes = new Uint8Array(32);
+  bytes[0] = (idCounter >> 8) & 0xff;
+  bytes[1] = idCounter & 0xff;
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  }
+  let binary = '';
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function uuidToBase64url(uuid: string): string {
+  const hex = uuid.replace(/-/g, '');
+  let binary = '';
+  for (let i = 0; i < hex.length; i += 2) {
+    binary += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function toPasskeyDto(pk: StoredPasskey, activePasskeyId: string | null): Passkey {
+  return {
+    id: pk.id,
+    label: pk.label,
+    created_at: pk.createdAt,
+    last_used_at: pk.lastUsedAt,
+    backup_eligible: pk.backupEligible,
+    backup_state: pk.backupState,
+    is_current: pk.id === activePasskeyId,
+  };
+}
+
+function toSessionDto(s: StoredSession, activeSessionId: string | null): Session {
+  return {
+    id: s.id,
+    created_at: s.createdAt,
+    last_seen_at: s.lastSeenAt,
+    is_current: s.id === activeSessionId,
+  };
+}
+
+function isReauthenticated(session: StoredSession): boolean {
+  return session.reauthAtMs !== null && Date.now() - session.reauthAtMs <= mockAuthConfig.reauthTtlMs;
 }
 
 function buildReportWithMarks(report: Report, marks: Record<string, ItemMark>): Report {
@@ -455,44 +643,511 @@ export async function mockFetch(
     return problemResponse(404, 'not_found', 'Not Found', `Route ${pathname} not found.`);
   }
 
-  const headers = new Headers(init?.headers);
-  const authHeader = headers.get('Authorization') || '';
-  if (!authHeader.startsWith('Bearer ')) {
-    return problemResponse(
-      401,
-      'unauthorized',
-      'Unauthorized',
-      'Missing or invalid Bearer token.',
-    );
-  }
-  const token = authHeader.slice('Bearer '.length).trim();
-  const claims = decodeJwtClaims(token);
-  if (!claims) {
-    return problemResponse(401, 'unauthorized', 'Unauthorized', 'Malformed JWT token.');
+  // Public auth endpoints (no session cookie required)
+  if (pathname === '/api/v1/auth/registration/options' && method === 'POST') {
+    const body = await parseJsonBody<RegistrationOptionsRequest>(init);
+    if (!body || !body.enrollment_token) {
+      return problemResponse(400, 'bad_request', 'Bad Request', 'enrollment_token is required.');
+    }
+    const tokenEntry = db.tokens[body.enrollment_token];
+    if (!tokenEntry || tokenEntry.status === 'revoked') {
+      return problemResponse(
+        400,
+        'enrollment_token_invalid',
+        'Invalid Enrollment Token',
+        'This enrollment link is invalid or revoked.',
+      );
+    }
+    if (tokenEntry.status === 'used') {
+      return problemResponse(
+        409,
+        'enrollment_token_used',
+        'Enrollment Token Used',
+        'This enrollment link has already been used.',
+      );
+    }
+    if (tokenEntry.status === 'expired') {
+      return problemResponse(
+        409,
+        'enrollment_token_expired',
+        'Enrollment Token Expired',
+        'This enrollment link has expired.',
+      );
+    }
+    if (tokenEntry.purpose !== 'invite' && body.display_name !== undefined) {
+      return problemResponse(
+        422,
+        'validation_error',
+        'Validation Error',
+        'display_name is only accepted for invite tokens.',
+      );
+    }
+    if (
+      !mockAuthConfig.nonOwnerAdmission &&
+      (tokenEntry.purpose === 'invite' || tokenEntry.userId !== MOCK_OWNER_USER_ID)
+    ) {
+      return problemResponse(
+        403,
+        'admission_disabled',
+        'Admission Disabled',
+        'Non-owner admission is disabled.',
+      );
+    }
+    if (tokenEntry.optionsCount >= 10) {
+      return problemResponse(429, 'rate_limited', 'Rate Limited', 'Too many registration attempts.');
+    }
+    tokenEntry.optionsCount += 1;
+
+    const pendingUserId = tokenEntry.purpose === 'invite' ? nextUuid('01000000') : null;
+    const targetUserId = tokenEntry.userId ?? pendingUserId!;
+    if (tokenEntry.userId) {
+      const targetUser = db.users[tokenEntry.userId];
+      if (!targetUser) {
+        return problemResponse(400, 'enrollment_token_invalid', 'Invalid Token', 'User not found.');
+      }
+      if (targetUser.profile.status === 'disabled') {
+        return problemResponse(403, 'account_disabled', 'Account Disabled', 'Account is disabled.');
+      }
+    }
+
+    const ceremonyId = nextUuid('91000000');
+    const purpose =
+      tokenEntry.purpose === 'invite'
+        ? 'register_invite'
+        : tokenEntry.purpose === 'recovery'
+          ? 'register_recovery'
+          : 'register_add';
+    const displayName =
+      tokenEntry.purpose === 'invite'
+        ? body.display_name?.trim() || 'Daily Brief User'
+        : db.users[targetUserId].profile.display_name;
+
+    db.ceremonies[ceremonyId] = {
+      id: ceremonyId,
+      purpose,
+      userId: tokenEntry.userId,
+      pendingUserId,
+      enrollmentToken: tokenEntry.token,
+      displayName: tokenEntry.purpose === 'invite' ? displayName : null,
+      sessionId: null,
+      consumed: false,
+    };
+
+    const excludeCredentials =
+      tokenEntry.purpose === 'add_credential'
+        ? db.passkeys
+            .filter((p) => p.userId === targetUserId && !p.revokedAt)
+            .map((p) => ({ type: 'public-key', id: p.credentialId }))
+        : [];
+
+    const options: CeremonyOptions = {
+      ceremony_id: ceremonyId,
+      public_key: {
+        rp: { id: getRpId(), name: 'Daily Brief' },
+        user: {
+          id: uuidToBase64url(targetUserId),
+          name: `${displayName} · ${getRpId()}`,
+          displayName,
+        },
+        challenge: makeChallengeBase64url(),
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 },
+        ],
+        timeout: 300000,
+        attestation: 'none',
+        excludeCredentials,
+        authenticatorSelection: {
+          residentKey: 'required',
+          requireResidentKey: true,
+          userVerification: 'required',
+        },
+      },
+    };
+    return jsonResponse(200, options);
   }
 
-  const store = getOrCreateUserStore(claims.sub, claims.email);
+  if (pathname === '/api/v1/auth/registration/verify' && method === 'POST') {
+    const body = await parseJsonBody<RegistrationVerifyRequest>(init);
+    if (!body) {
+      return problemResponse(400, 'bad_request', 'Bad Request', 'Missing body.');
+    }
+    const ceremony = db.ceremonies[body.ceremony_id];
+    if (
+      !ceremony ||
+      ceremony.consumed ||
+      !['register_invite', 'register_recovery', 'register_add'].includes(ceremony.purpose)
+    ) {
+      return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
+    }
+    ceremony.consumed = true;
 
+    const tokenEntry = ceremony.enrollmentToken ? db.tokens[ceremony.enrollmentToken] : null;
+    if (!tokenEntry || tokenEntry.status === 'revoked') {
+      return problemResponse(400, 'enrollment_token_invalid', 'Invalid Token', 'Token invalid.');
+    }
+    if (tokenEntry.status === 'used') {
+      return problemResponse(409, 'enrollment_token_used', 'Token Used', 'Token already used.');
+    }
+    if (tokenEntry.status === 'expired') {
+      return problemResponse(409, 'enrollment_token_expired', 'Token Expired', 'Token expired.');
+    }
+    if (db.passkeys.some((p) => p.credentialId === body.credential.id)) {
+      return problemResponse(409, 'credential_exists', 'Credential Exists', 'Passkey already exists.');
+    }
+
+    const userId = ceremony.userId ?? ceremony.pendingUserId!;
+    let userStore = db.users[userId];
+    if (!userStore) {
+      userStore = createInvitedUserStore(userId, ceremony.displayName || 'Daily Brief User');
+    }
+
+    const now = nowIso();
+    if (ceremony.purpose === 'register_recovery') {
+      for (const pk of db.passkeys) {
+        if (pk.userId === userId && !pk.revokedAt) {
+          pk.revokedAt = now;
+        }
+      }
+      for (const s of db.sessions) {
+        if (s.userId === userId && !s.revokedAt) {
+          s.revokedAt = now;
+        }
+      }
+    }
+
+    const passkeyId = nextUuid('81000000');
+    db.passkeys.push({
+      id: passkeyId,
+      userId,
+      credentialId: body.credential.id,
+      label: body.label?.trim() || '',
+      createdAt: now,
+      lastUsedAt: null,
+      backupEligible: true,
+      backupState: false,
+      revokedAt: null,
+    });
+    tokenEntry.status = 'used';
+
+    const sessionId = nextUuid('85000000');
+    db.sessions.push({
+      id: sessionId,
+      userId,
+      passkeyId,
+      createdAt: now,
+      lastSeenAt: now,
+      reauthAtMs: null,
+      revokedAt: null,
+    });
+    db.activeSessionId = sessionId;
+
+    return jsonResponse(200, userStore.profile);
+  }
+
+  if (pathname === '/api/v1/auth/login/options' && method === 'POST') {
+    const ceremonyId = nextUuid('92000000');
+    db.ceremonies[ceremonyId] = {
+      id: ceremonyId,
+      purpose: 'login',
+      userId: null,
+      pendingUserId: null,
+      enrollmentToken: null,
+      displayName: null,
+      sessionId: null,
+      consumed: false,
+    };
+    const options: CeremonyOptions = {
+      ceremony_id: ceremonyId,
+      public_key: {
+        challenge: makeChallengeBase64url(),
+        timeout: 300000,
+        rpId: getRpId(),
+        allowCredentials: [],
+        userVerification: 'required',
+      },
+    };
+    return jsonResponse(200, options);
+  }
+
+  if (pathname === '/api/v1/auth/login/verify' && method === 'POST') {
+    const body = await parseJsonBody<CeremonyVerifyRequest>(init);
+    if (!body) {
+      return problemResponse(400, 'bad_request', 'Bad Request', 'Missing body.');
+    }
+    const ceremony = db.ceremonies[body.ceremony_id];
+    if (!ceremony || ceremony.consumed || ceremony.purpose !== 'login') {
+      return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
+    }
+    ceremony.consumed = true;
+
+    const pk = db.passkeys.find((p) => p.credentialId === body.credential.id && !p.revokedAt);
+    if (!pk) {
+      return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
+    }
+    const userStore = db.users[pk.userId];
+    if (!userStore) {
+      return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
+    }
+    if (userStore.profile.status === 'disabled') {
+      return problemResponse(403, 'account_disabled', 'Account Disabled', 'This account has been disabled.');
+    }
+
+    const now = nowIso();
+    pk.lastUsedAt = now;
+    const sessionId = nextUuid('85000000');
+    db.sessions.push({
+      id: sessionId,
+      userId: pk.userId,
+      passkeyId: pk.id,
+      createdAt: now,
+      lastSeenAt: now,
+      reauthAtMs: null,
+      revokedAt: null,
+    });
+    db.activeSessionId = sessionId;
+
+    return jsonResponse(200, userStore.profile);
+  }
+
+  // Session-authenticated routes
+  const activeSession = db.activeSessionId
+    ? db.sessions.find((s) => s.id === db.activeSessionId && !s.revokedAt) ?? null
+    : null;
+  if (!activeSession) {
+    return problemResponse(401, 'unauthorized', 'Unauthorized', 'Not signed in.');
+  }
+  const activePasskey = activeSession.passkeyId
+    ? db.passkeys.find((p) => p.id === activeSession.passkeyId && !p.revokedAt) ?? null
+    : null;
+  if (activeSession.passkeyId && !activePasskey) {
+    return problemResponse(401, 'unauthorized', 'Unauthorized', 'Passkey revoked.');
+  }
+
+  const store = db.users[activeSession.userId];
+  if (!store) {
+    return problemResponse(401, 'unauthorized', 'Unauthorized', 'User not found.');
+  }
   if (store.profile.status === 'disabled') {
-    return problemResponse(
-      403,
-      'account_disabled',
-      'Account Disabled',
-      'This account has been disabled.',
-    );
+    return problemResponse(401, 'unauthorized', 'Unauthorized', 'Account disabled.');
   }
 
-  const isAllowedForPending =
-    (pathname === '/api/v1/me' && method === 'GET') ||
-    (pathname === '/api/v1/auth/redeem-invite' && method === 'POST');
+  if (pathname === '/api/v1/auth/logout' && method === 'POST') {
+    activeSession.revokedAt = nowIso();
+    db.activeSessionId = null;
+    return new Response(null, { status: 204 });
+  }
 
-  if (store.profile.status === 'pending' && !isAllowedForPending) {
-    return problemResponse(
-      403,
-      'account_pending',
-      'Account Pending',
-      'Redeem an invite code to activate this account.',
+  if (pathname === '/api/v1/auth/reauth/options' && method === 'POST') {
+    const ceremonyId = nextUuid('93000000');
+    db.ceremonies[ceremonyId] = {
+      id: ceremonyId,
+      purpose: 'reauth',
+      userId: activeSession.userId,
+      pendingUserId: null,
+      enrollmentToken: null,
+      displayName: null,
+      sessionId: activeSession.id,
+      consumed: false,
+    };
+    const allowCredentials = db.passkeys
+      .filter((p) => p.userId === activeSession.userId && !p.revokedAt)
+      .map((p) => ({ type: 'public-key', id: p.credentialId }));
+    const options: CeremonyOptions = {
+      ceremony_id: ceremonyId,
+      public_key: {
+        challenge: makeChallengeBase64url(),
+        timeout: 300000,
+        rpId: getRpId(),
+        allowCredentials,
+        userVerification: 'required',
+      },
+    };
+    return jsonResponse(200, options);
+  }
+
+  if (pathname === '/api/v1/auth/reauth/verify' && method === 'POST') {
+    const body = await parseJsonBody<CeremonyVerifyRequest>(init);
+    if (!body) {
+      return problemResponse(400, 'bad_request', 'Bad Request', 'Missing body.');
+    }
+    const ceremony = db.ceremonies[body.ceremony_id];
+    if (
+      !ceremony ||
+      ceremony.consumed ||
+      ceremony.purpose !== 'reauth' ||
+      ceremony.sessionId !== activeSession.id
+    ) {
+      return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
+    }
+    ceremony.consumed = true;
+    const pk = db.passkeys.find(
+      (p) =>
+        p.credentialId === body.credential.id &&
+        p.userId === activeSession.userId &&
+        !p.revokedAt,
     );
+    if (!pk) {
+      return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
+    }
+    pk.lastUsedAt = nowIso();
+    activeSession.reauthAtMs = Date.now();
+    return new Response(null, { status: 204 });
+  }
+
+  if (pathname === '/api/v1/me/passkeys' && method === 'GET') {
+    const userPasskeys = db.passkeys
+      .filter((p) => p.userId === activeSession.userId && !p.revokedAt)
+      .map((p) => toPasskeyDto(p, activeSession.passkeyId));
+    return jsonResponse(200, { passkeys: userPasskeys });
+  }
+
+  if (pathname === '/api/v1/me/passkeys/options' && method === 'POST') {
+    if (!isReauthenticated(activeSession)) {
+      return problemResponse(403, 'reauth_required', 'Reauth Required', 'Recent reauthentication required.');
+    }
+    const activeCount = db.passkeys.filter(
+      (p) => p.userId === activeSession.userId && !p.revokedAt,
+    ).length;
+    if (activeCount >= 10) {
+      return problemResponse(409, 'passkey_limit', 'Passkey Limit', 'Maximum 10 passkeys.');
+    }
+    const ceremonyId = nextUuid('94000000');
+    db.ceremonies[ceremonyId] = {
+      id: ceremonyId,
+      purpose: 'add_passkey',
+      userId: activeSession.userId,
+      pendingUserId: null,
+      enrollmentToken: null,
+      displayName: null,
+      sessionId: activeSession.id,
+      consumed: false,
+    };
+    const excludeCredentials = db.passkeys
+      .filter((p) => p.userId === activeSession.userId && !p.revokedAt)
+      .map((p) => ({ type: 'public-key', id: p.credentialId }));
+    const options: CeremonyOptions = {
+      ceremony_id: ceremonyId,
+      public_key: {
+        rp: { id: getRpId(), name: 'Daily Brief' },
+        user: {
+          id: uuidToBase64url(activeSession.userId),
+          name: `${store.profile.display_name} · ${getRpId()}`,
+          displayName: store.profile.display_name,
+        },
+        challenge: makeChallengeBase64url(),
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 },
+        ],
+        timeout: 300000,
+        attestation: 'none',
+        excludeCredentials,
+        authenticatorSelection: {
+          residentKey: 'required',
+          requireResidentKey: true,
+          userVerification: 'required',
+        },
+      },
+    };
+    return jsonResponse(200, options);
+  }
+
+  if (pathname === '/api/v1/me/passkeys/verify' && method === 'POST') {
+    if (!isReauthenticated(activeSession)) {
+      return problemResponse(403, 'reauth_required', 'Reauth Required', 'Recent reauthentication required.');
+    }
+    const body = await parseJsonBody<RegistrationVerifyRequest>(init);
+    if (!body) {
+      return problemResponse(400, 'bad_request', 'Bad Request', 'Missing body.');
+    }
+    const ceremony = db.ceremonies[body.ceremony_id];
+    if (
+      !ceremony ||
+      ceremony.consumed ||
+      ceremony.purpose !== 'add_passkey' ||
+      ceremony.sessionId !== activeSession.id
+    ) {
+      return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
+    }
+    ceremony.consumed = true;
+
+    if (db.passkeys.some((p) => p.credentialId === body.credential.id)) {
+      return problemResponse(409, 'credential_exists', 'Credential Exists', 'Passkey already exists.');
+    }
+    const activeCount = db.passkeys.filter(
+      (p) => p.userId === activeSession.userId && !p.revokedAt,
+    ).length;
+    if (activeCount >= 10) {
+      return problemResponse(409, 'passkey_limit', 'Passkey Limit', 'Maximum 10 passkeys.');
+    }
+    const created: StoredPasskey = {
+      id: nextUuid('81000000'),
+      userId: activeSession.userId,
+      credentialId: body.credential.id,
+      label: body.label?.trim() || '',
+      createdAt: nowIso(),
+      lastUsedAt: null,
+      backupEligible: true,
+      backupState: false,
+      revokedAt: null,
+    };
+    db.passkeys.push(created);
+    return jsonResponse(201, toPasskeyDto(created, activeSession.passkeyId));
+  }
+
+  const passkeyDeleteMatch = pathname.match(/^\/api\/v1\/me\/passkeys\/([^/]+)$/);
+  if (passkeyDeleteMatch && method === 'DELETE') {
+    if (!isReauthenticated(activeSession)) {
+      return problemResponse(403, 'reauth_required', 'Reauth Required', 'Recent reauthentication required.');
+    }
+    const pkId = passkeyDeleteMatch[1];
+    const target = db.passkeys.find(
+      (p) => p.id === pkId && p.userId === activeSession.userId && !p.revokedAt,
+    );
+    if (!target) {
+      return problemResponse(404, 'not_found', 'Not Found', 'Passkey not found.');
+    }
+    const remaining = db.passkeys.filter(
+      (p) => p.userId === activeSession.userId && !p.revokedAt && p.id !== pkId,
+    );
+    if (remaining.length === 0) {
+      return problemResponse(409, 'last_passkey', 'Last Passkey', 'Cannot delete your last passkey.');
+    }
+    const now = nowIso();
+    target.revokedAt = now;
+    for (const s of db.sessions) {
+      if (s.passkeyId === target.id && !s.revokedAt) {
+        s.revokedAt = now;
+      }
+    }
+    if (activeSession.passkeyId === target.id) {
+      db.activeSessionId = null;
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  if (pathname === '/api/v1/me/sessions' && method === 'GET') {
+    const userSessions = db.sessions
+      .filter((s) => s.userId === activeSession.userId && !s.revokedAt)
+      .map((s) => toSessionDto(s, activeSession.id));
+    return jsonResponse(200, { sessions: userSessions });
+  }
+
+  const sessionDeleteMatch = pathname.match(/^\/api\/v1\/me\/sessions\/([^/]+)$/);
+  if (sessionDeleteMatch && method === 'DELETE') {
+    const sessId = sessionDeleteMatch[1];
+    const target = db.sessions.find(
+      (s) => s.id === sessId && s.userId === activeSession.userId && !s.revokedAt,
+    );
+    if (!target) {
+      return problemResponse(404, 'not_found', 'Not Found', 'Session not found.');
+    }
+    target.revokedAt = nowIso();
+    if (db.activeSessionId === target.id) {
+      db.activeSessionId = null;
+    }
+    return new Response(null, { status: 204 });
   }
 
   // GET / PATCH /api/v1/me
@@ -536,34 +1191,6 @@ export async function mockFetch(
       };
       return jsonResponse(200, store.profile);
     }
-  }
-
-  // POST /api/v1/auth/redeem-invite
-  if (pathname === '/api/v1/auth/redeem-invite' && method === 'POST') {
-    const body = await parseJsonBody<RedeemInviteRequest>(init);
-    const code = body?.code?.trim() || '';
-    if (!code) {
-      return problemResponse(422, 'validation_error', 'Validation Error', 'Invite code is required.');
-    }
-    if (store.profile.status === 'active') {
-      return problemResponse(409, 'already_active', 'Already Active', 'Account is already active.');
-    }
-    const entry = db.validInviteCodes[code];
-    if (!entry) {
-      return problemResponse(404, 'invite_not_found', 'Invite Not Found', 'Invite code does not exist.');
-    }
-    if (entry.status === 'expired') {
-      return problemResponse(409, 'invite_expired', 'Invite Expired', 'Invite code has expired.');
-    }
-    if (entry.status === 'exhausted') {
-      return problemResponse(409, 'invite_exhausted', 'Invite Exhausted', 'Invite code has reached max uses.');
-    }
-    store.profile = {
-      ...store.profile,
-      status: 'active',
-      updated_at: nowIso(),
-    };
-    return jsonResponse(200, store.profile);
   }
 
   // GET / POST /api/v1/topics
@@ -922,7 +1549,7 @@ export async function mockFetch(
   if (pathname === '/api/v1/jobs' && method === 'POST') {
     if (
       store.agentSettings.runner === 'claude_subscription' &&
-      store.profile.user_id !== DEV_OWNER_USER_ID
+      store.profile.user_id !== MOCK_OWNER_USER_ID
     ) {
       return problemResponse(
         403,
