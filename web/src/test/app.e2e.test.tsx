@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -482,6 +482,25 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
 
       // Retry succeeds -> signed out
       await user.click(screen.getByRole('button', { name: 'Sign Out' }));
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /Sign In to Daily Brief/i })).toBeInTheDocument();
+      });
+
+      // 401 on logout also transitions cleanly to signed-out
+      cleanup();
+      signInMockUserForTests(MOCK_OWNER_USER_ID);
+      const { ApiError } = await import('../api/client');
+      logoutSpy.mockRejectedValueOnce(
+        new ApiError({
+          type: 'about:blank',
+          title: 'Unauthorized',
+          status: 401,
+          detail: 'Session expired',
+          code: 'unauthorized',
+        }),
+      );
+      renderApp(['/']);
+      await user.click(await screen.findByRole('button', { name: 'Sign Out' }));
       await waitFor(() => {
         expect(screen.getByRole('heading', { name: /Sign In to Daily Brief/i })).toBeInTheDocument();
       });

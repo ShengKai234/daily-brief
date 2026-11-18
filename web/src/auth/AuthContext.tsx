@@ -97,14 +97,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    setError(null);
+    setErrorCode(null);
     try {
       await apiClient.logout();
-    } catch {
-      // Session may already be expired or revoked.
-    } finally {
       setProfile(null);
-      setError(null);
-      setErrorCode(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.problem.status === 401) {
+        setProfile(null);
+        return;
+      }
+      if (err instanceof ApiError) {
+        setErrorCode(err.problem.code);
+        setError(`Sign out failed: ${formatProblemMessage(err.problem)}`);
+      } else {
+        setError(
+          `Sign out failed: ${err instanceof Error ? err.message : 'Please try again.'}`,
+        );
+      }
     }
   }, []);
 

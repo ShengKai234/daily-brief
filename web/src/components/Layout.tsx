@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { profile, signOut } = useAuth();
+  const { profile, error, clearError, signOut } = useAuth();
 
   return (
     <div className="app-shell">
@@ -52,6 +52,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </header>
 
       <main id="main-content" className="app-main" tabIndex={-1}>
+        {profile && error ? (
+          <div className="alert" role="alert">
+            <div className="row-between">
+              <span>{error}</span>
+              <div className="row">
+                <button type="button" className="btn" onClick={() => void signOut()}>
+                  Retry Sign Out
+                </button>
+                <button type="button" className="btn" onClick={clearError}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {children}
       </main>
     </div>
