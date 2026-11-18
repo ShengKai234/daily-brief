@@ -118,3 +118,43 @@ async def test_reauth_window_is_rechecked_with_fresh_time_after_the_lock(env, mo
         (400, "ceremony_invalid"),
     }
     assert len(await rows(env, "SELECT 1 FROM passkey_credentials")) == 1
+
+
+@pytest.mark.integration
+async def test_revoke_token_and_recovery_do_not_deadlock(env):
+    """8-3: revoke-token must lock the profile before the token (design 5.6 order)."""
+    from authkit import issue_add, issue_recovery
+
+    from app import auth_admin
+
+    browser, _ = await owner_with_passkey(env)
+    add_token = await issue_add(env, OWNER)
+    recovery = await issue_recovery(env, OWNER)
+    add_id = (await rows(env, "SELECT id FROM enrollment_tokens WHERE purpose='add_credential'"))[
+        0
+    ]["id"]
+    fresh = env["browser"]()
+    options = (
+        await fresh.post("/v1/auth/registration/options", json=options_body(recovery))
+    ).json()
+    body = {
+        "ceremony_id": options["ceremony_id"],
+        "credential": FakeAuthenticator().create(options["public_key"]),
+    }
+    del add_token
+    async with env["super"].transaction() as holder:
+        # Recovery will take profile, token, sessions and credentials, then wait for the ceremony.
+        await holder.execute(
+            "SELECT 1 FROM webauthn_ceremonies WHERE id = %s FOR UPDATE", (options["ceremony_id"],)
+        )
+        recovering = asyncio.create_task(
+            fresh.post("/v1/auth/registration/verify", json=body, contract=False)
+        )
+        await asyncio.sleep(0.7)
+        revoking = asyncio.create_task(Cli(env).run("revoke-token", str(add_id)))
+        await asyncio.sleep(0.7)
+    response, cli = await asyncio.gather(recovering, revoking, return_exceptions=True)
+    assert not isinstance(response, Exception), repr(response)
+    assert response.status_code == 200, response.text
+    # The token was already revoked by the recovery, so the CLI reports that cleanly.
+    assert isinstance(cli, auth_admin.CliError) or isinstance(cli, str), repr(cli)
