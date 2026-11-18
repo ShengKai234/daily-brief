@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ApiError } from '../api/client';
+import { formatProblemMessage } from '../api/errors';
 import { useAuth } from '../auth/AuthContext';
 
 export function ProfilePage() {
@@ -39,7 +40,7 @@ export function ProfilePage() {
       setSavedNotice('Profile updated.');
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(`${err.problem.detail} (${err.problem.code})`);
+        setError(formatProblemMessage(err.problem));
       } else {
         setError(err instanceof Error ? err.message : 'Failed to update profile.');
       }
@@ -80,7 +81,7 @@ export function ProfilePage() {
           Account Identity
         </h2>
         <p className="text-muted">
-          Email: <strong>{profile.email}</strong> · Status: <strong>{profile.status}</strong>
+          Status: <strong>{profile.status}</strong>
         </p>
         <p className="text-subtle text-mono">User ID: {profile.user_id}</p>
       </section>

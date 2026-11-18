@@ -1,14 +1,15 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext';
 import { Layout } from './components/Layout';
+import { EnrollPage } from './pages/EnrollPage';
 import { ProfilePage } from './pages/ProfilePage';
-import { RedeemInvitePage } from './pages/RedeemInvitePage';
 import { ReportsPage } from './pages/ReportsPage';
+import { SecurityPage } from './pages/SecurityPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SignInPage } from './pages/SignInPage';
 
 export function AppRoutes() {
-  const { token, profile, loading, error, errorCode, signOut } = useAuth();
+  const { profile, loading, error, errorCode, signOut } = useAuth();
 
   if (loading) {
     return (
@@ -16,14 +17,6 @@ export function AppRoutes() {
         <div className="card" role="status">
           <p className="text-muted">Loading session...</p>
         </div>
-      </Layout>
-    );
-  }
-
-  if (!token) {
-    return (
-      <Layout>
-        <SignInPage />
       </Layout>
     );
   }
@@ -37,7 +30,7 @@ export function AppRoutes() {
             {error || 'This account has been disabled and cannot access Daily Brief.'}
           </p>
           <div>
-            <button type="button" className="btn" onClick={signOut}>
+            <button type="button" className="btn" onClick={() => void signOut()}>
               Sign Out
             </button>
           </div>
@@ -49,23 +42,10 @@ export function AppRoutes() {
   if (!profile) {
     return (
       <Layout>
-        <div className="card" role="alert">
-          <h1 className="section-title">Unable to Load Profile</h1>
-          <p className="text-muted">{error || 'Unexpected error communicating with the API.'}</p>
-          <div>
-            <button type="button" className="btn" onClick={signOut}>
-              Back to Sign In
-            </button>
-          </div>
-        </div>
-      </Layout>
-    );
-  }
-
-  if (profile.status === 'pending') {
-    return (
-      <Layout>
-        <RedeemInvitePage />
+        <Routes>
+          <Route path="/enroll" element={<EnrollPage />} />
+          <Route path="*" element={<SignInPage />} />
+        </Routes>
       </Layout>
     );
   }
@@ -76,6 +56,8 @@ export function AppRoutes() {
         <Route path="/" element={<ReportsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/security" element={<SecurityPage />} />
+        <Route path="/enroll" element={<EnrollPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

@@ -150,7 +150,7 @@ export function todayIn(timeZone?: string | null, now: Date = new Date()): strin
 }
 
 export function ReportsPage() {
-  const { token, profile } = useAuth();
+  const { profile } = useAuth();
   const [selectedDate, setSelectedDate] = useState<string>(() => todayIn(profile?.timezone));
   const [userChangedDate, setUserChangedDate] = useState<boolean>(false);
   const [summaries, setSummaries] = useState<ReportSummary[]>([]);
@@ -180,13 +180,10 @@ export function ReportsPage() {
 
   const loadReportsForDate = useCallback(
     async (dateStr: string, preferredReportId?: string) => {
-      if (!token) {
-        return;
-      }
       setLoadingList(true);
       setError(null);
       try {
-        const res = await apiClient.listReports(token, dateStr);
+        const res = await apiClient.listReports(dateStr);
         setSummaries(res.reports);
         const targetId = preferredReportId ?? preferredReportIdRef.current;
         if (targetId && res.reports.some((r) => r.id === targetId)) {
@@ -211,7 +208,7 @@ export function ReportsPage() {
         setLoadingList(false);
       }
     },
-    [token],
+    [],
   );
 
   useEffect(() => {
@@ -219,7 +216,7 @@ export function ReportsPage() {
   }, [selectedDate, loadReportsForDate]);
 
   useEffect(() => {
-    if (!token || !selectedReportId) {
+    if (!selectedReportId) {
       return;
     }
     let cancelled = false;
@@ -227,7 +224,7 @@ export function ReportsPage() {
       setLoadingReport(true);
       setError(null);
       try {
-        const loaded = await apiClient.getReport(token, selectedReportId);
+        const loaded = await apiClient.getReport(selectedReportId);
         if (!cancelled) {
           setReport(loaded);
         }
@@ -249,10 +246,10 @@ export function ReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, selectedReportId]);
+  }, [selectedReportId]);
 
   useEffect(() => {
-    if (!token || !activeJob || !pollStartedAt) {
+    if (!activeJob || !pollStartedAt) {
       return;
     }
     if (activeJob.status !== 'queued' && activeJob.status !== 'running') {
@@ -275,7 +272,7 @@ export function ReportsPage() {
       }
 
       try {
-        const updated = await apiClient.getJob(token, activeJob.id);
+        const updated = await apiClient.getJob(activeJob.id);
         if (cancelled) {
           return;
         }
@@ -286,7 +283,7 @@ export function ReportsPage() {
           setPollStartedAt(null);
           if (updated.report_id) {
             preferredReportIdRef.current = updated.report_id;
-            const loaded = await apiClient.getReport(token, updated.report_id);
+            const loaded = await apiClient.getReport(updated.report_id);
             if (!cancelled) {
               if (loaded.report_date !== selectedDate) {
                 setSelectedDate(loaded.report_date);
@@ -323,10 +320,10 @@ export function ReportsPage() {
       cancelled = true;
       window.clearTimeout(timerId);
     };
-  }, [token, activeJob, pollStartedAt, pollTick, selectedDate, loadReportsForDate]);
+  }, [activeJob, pollStartedAt, pollTick, selectedDate, loadReportsForDate]);
 
   const handleGenerateNow = async () => {
-    if (!token || isJobActive) {
+    if (isJobActive) {
       return;
     }
     setSubmittingJob(true);
@@ -334,7 +331,7 @@ export function ReportsPage() {
     setJobErrorMessage(null);
     setError(null);
     try {
-      const created = await apiClient.generateNow(token);
+      const created = await apiClient.generateNow();
       setActiveJob(created);
       setPollStartedAt(Date.now());
       setPollTick(0);
@@ -368,13 +365,13 @@ export function ReportsPage() {
   };
 
   const handleSaveMark = async (itemId: string, read: boolean, note: string | null) => {
-    if (!token || !report) {
+    if (!report) {
       return;
     }
     setSavingItemId(itemId);
     setError(null);
     try {
-      const updatedMark = await apiClient.setItemMark(token, itemId, { read, note });
+      const updatedMark = await apiClient.setItemMark(itemId, { read, note });
       const updatedSections = report.sections.map((section) => ({
         ...section,
         items: section.items.map((item) =>

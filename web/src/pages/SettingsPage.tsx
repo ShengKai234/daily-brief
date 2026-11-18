@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ApiError, apiClient } from '../api/client';
 import type { AgentSettings, Subscription, Topic } from '../api/types';
-import { useAuth } from '../auth/AuthContext';
 
 const HALF_HOUR_OPTIONS: string[] = Array.from({ length: 48 }, (_, index) => {
   const hours = String(Math.floor(index / 2)).padStart(2, '0');
@@ -15,7 +14,6 @@ interface EditableSlot {
 }
 
 export function SettingsPage() {
-  const { token } = useAuth();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [slots, setSlots] = useState<EditableSlot[]>([]);
@@ -33,17 +31,14 @@ export function SettingsPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
-    if (!token) {
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
       const [subsRes, topicsRes, slotsRes, agentRes] = await Promise.all([
-        apiClient.listSubscriptions(token),
-        apiClient.listTopics(token),
-        apiClient.getDeliverySlots(token),
-        apiClient.getAgentSettings(token),
+        apiClient.listSubscriptions(),
+        apiClient.listTopics(),
+        apiClient.getDeliverySlots(),
+        apiClient.getAgentSettings(),
       ]);
       setSubscriptions(subsRes.subscriptions);
       setTopics(topicsRes.topics);
@@ -64,7 +59,7 @@ export function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     void loadAll();
@@ -72,9 +67,6 @@ export function SettingsPage() {
 
   const handleAddSubscription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token) {
-      return;
-    }
     const title = newTopicTitle.trim();
     if (!title) {
       return;
@@ -83,7 +75,7 @@ export function SettingsPage() {
     setError(null);
     setStatusMessage(null);
     try {
-      await apiClient.createSubscription(token, {
+      await apiClient.createSubscription({
         title,
         item_count: newItemCount,
         enabled: true,
@@ -107,14 +99,11 @@ export function SettingsPage() {
     sub: Subscription,
     patch: { item_count?: number; enabled?: boolean; position?: number },
   ) => {
-    if (!token) {
-      return;
-    }
     setBusy(true);
     setError(null);
     setStatusMessage(null);
     try {
-      await apiClient.updateSubscription(token, sub.id, patch);
+      await apiClient.updateSubscription(sub.id, patch);
       await loadAll();
       setStatusMessage(`Updated "${sub.topic.title}".`);
     } catch (err) {
@@ -129,14 +118,11 @@ export function SettingsPage() {
   };
 
   const handleDeleteSubscription = async (sub: Subscription) => {
-    if (!token) {
-      return;
-    }
     setBusy(true);
     setError(null);
     setStatusMessage(null);
     try {
-      await apiClient.deleteSubscription(token, sub.id);
+      await apiClient.deleteSubscription(sub.id);
       await loadAll();
       setStatusMessage(`Unsubscribed from "${sub.topic.title}".`);
     } catch (err) {
@@ -151,9 +137,6 @@ export function SettingsPage() {
   };
 
   const handleSaveTopicTitle = async (topicId: string) => {
-    if (!token) {
-      return;
-    }
     const trimmed = editingTopicTitle.trim();
     if (!trimmed) {
       return;
@@ -162,7 +145,7 @@ export function SettingsPage() {
     setError(null);
     setStatusMessage(null);
     try {
-      await apiClient.updateTopic(token, topicId, { title: trimmed });
+      await apiClient.updateTopic(topicId, { title: trimmed });
       setEditingTopicId(null);
       setEditingTopicTitle('');
       await loadAll();
@@ -179,14 +162,11 @@ export function SettingsPage() {
   };
 
   const handleDeleteTopic = async (topic: Topic) => {
-    if (!token) {
-      return;
-    }
     setBusy(true);
     setError(null);
     setStatusMessage(null);
     try {
-      await apiClient.deleteTopic(token, topic.id);
+      await apiClient.deleteTopic(topic.id);
       await loadAll();
       setStatusMessage(`Deleted topic "${topic.title}".`);
     } catch (err) {
@@ -216,14 +196,11 @@ export function SettingsPage() {
 
   const handleSaveSlots = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token) {
-      return;
-    }
     setBusy(true);
     setError(null);
     setStatusMessage(null);
     try {
-      const updated = await apiClient.replaceDeliverySlots(token, { slots });
+      const updated = await apiClient.replaceDeliverySlots({ slots });
       setSlots(
         updated.slots.map((s) => ({
           local_time: s.local_time,
@@ -477,16 +454,13 @@ export function SettingsPage() {
                           className="btn"
                           disabled={busy}
                           onClick={() =>
-                            void (
-                              token &&
-                              apiClient
-                                .createSubscription(token, {
-                                  topic_id: topic.id,
-                                  item_count: 3,
-                                  enabled: true,
-                                })
-                                .then(() => loadAll())
-                            )
+                            void apiClient
+                              .createSubscription({
+                                topic_id: topic.id,
+                                item_count: 3,
+                                enabled: true,
+                              })
+                              .then(() => loadAll())
                           }
                         >
                           Re-subscribe

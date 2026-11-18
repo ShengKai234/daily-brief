@@ -34,13 +34,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <NavLink to="/profile" className="nav-link">
                 Profile
               </NavLink>
-              <button type="button" className="btn" onClick={signOut}>
+              <NavLink to="/security" className="nav-link">
+                Security
+              </NavLink>
+              <button type="button" className="btn" onClick={() => void signOut()}>
                 Sign Out
               </button>
             </nav>
           ) : profile ? (
             <div className="app-nav">
-              <button type="button" className="btn" onClick={signOut}>
+              <button type="button" className="btn" onClick={() => void signOut()}>
                 Sign Out
               </button>
             </div>
