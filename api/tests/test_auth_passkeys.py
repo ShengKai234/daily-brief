@@ -516,3 +516,18 @@ async def test_issue_commands_validate_and_list_tokens_hides_secrets(env):
         "/v1/auth/registration/options", json=options_body(token)
     )
     assert response.json()["code"] == "enrollment_token_invalid"
+
+
+@pytest.mark.integration
+async def test_reauth_accepts_an_assertion_without_user_handle(env):
+    """8-1: with allowCredentials the authenticator may omit userHandle; login still requires it."""
+    browser, auth = await owner_with_passkey(env)
+    assert (await reauth(browser, auth, OWNER, drop_handle=True)).status_code == 204
+    assert (await one(env, "SELECT reauth_at FROM auth_sessions WHERE kind='passkey'"))["reauth_at"]
+
+
+@pytest.mark.integration
+async def test_reauth_with_a_wrong_user_handle_still_fails(env):
+    browser, auth = await owner_with_passkey(env)
+    response = await reauth(browser, auth, uuid4())
+    assert (response.status_code, response.json()["code"]) == (401, "authentication_failed")
