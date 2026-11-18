@@ -38,7 +38,10 @@ class Database:
         url = url.replace("postgresql+psycopg://", "postgresql://", 1)
         if not url.startswith("postgresql://"):
             raise ValueError("DATABASE_URL must be a PostgreSQL URL")
-        mode = self.settings.database_sslmode or ("" if self.settings.local else "require")
+        # Production always verifies the server certificate and host name (design 4.4); a weaker
+        # sslmode in the URL cannot lower it, and sslrootcert from the URL is kept. Only tests
+        # against a throwaway container set `database_sslmode` explicitly.
+        mode = self.settings.database_sslmode or ("" if self.settings.local else "verify-full")
         options = {"sslmode": mode} if mode else {}
         # No process-level pool or prepared statements: safe for transaction pooling
         # and Lambda freeze/thaw. Connections close at the end of every transaction.
