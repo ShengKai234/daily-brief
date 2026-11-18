@@ -27,8 +27,18 @@ export type AgentSettings = ApiSchemas['AgentSettings'];
 export type AgentSettingsUpdate = ApiSchemas['AgentSettingsUpdate'];
 export type UserJob = ApiSchemas['UserJob'];
 
-export type RedeemInviteRequest =
-  operations['redeemInvite']['requestBody']['content']['application/json'];
+export type RegistrationOptionsRequest = ApiSchemas['RegistrationOptionsRequest'];
+export type RegistrationVerifyRequest = ApiSchemas['RegistrationVerifyRequest'];
+export type CeremonyOptions = ApiSchemas['CeremonyOptions'];
+export type CeremonyVerifyRequest = ApiSchemas['CeremonyVerifyRequest'];
+export type WebAuthnCredential = ApiSchemas['WebAuthnCredential'];
+export type Passkey = ApiSchemas['Passkey'];
+export type Session = ApiSchemas['Session'];
+
+export type ListPasskeysResponse =
+  operations['listPasskeys']['responses'][200]['content']['application/json'];
+export type ListSessionsResponse =
+  operations['listSessions']['responses'][200]['content']['application/json'];
 export type ListTopicsResponse =
   operations['listTopics']['responses'][200]['content']['application/json'];
 export type ListSubscriptionsResponse =

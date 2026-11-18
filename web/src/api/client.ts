@@ -2,18 +2,24 @@ import { mockFetch } from './mockApi';
 import type {
   AgentSettings,
   AgentSettingsUpdate,
+  CeremonyOptions,
+  CeremonyVerifyRequest,
   DeliverySlotSet,
   DeliverySlotsReplace,
   HealthResponse,
   ItemMark,
   ItemMarkUpdate,
+  ListPasskeysResponse,
   ListReportsResponse,
+  ListSessionsResponse,
   ListSubscriptionsResponse,
   ListTopicsResponse,
+  Passkey,
   Problem,
   Profile,
   ProfileUpdate,
-  RedeemInviteRequest,
+  RegistrationOptionsRequest,
+  RegistrationVerifyRequest,
   Report,
   Subscription,
   SubscriptionCreate,
@@ -42,26 +48,30 @@ export function isMockApiEnabled(): boolean {
   return true;
 }
 
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 async function request<T>(
   path: string,
   options: {
     method?: string;
-    token?: string | null;
     body?: unknown;
+    skipUnauthorizedHandler?: boolean;
   } = {},
 ): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/json, application/problem+json',
   };
-  if (options.token) {
-    headers.Authorization = `Bearer ${options.token}`;
-  }
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
   }
 
   const init: RequestInit = {
     method: options.method || 'GET',
+    credentials: 'same-origin',
     headers,
     ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   };
@@ -95,6 +105,16 @@ async function request<T>(
         code: 'http_error',
       };
     }
+
+    if (
+      response.status === 401 &&
+      problem.code !== 'authentication_failed' &&
+      !options.skipUnauthorizedHandler &&
+      unauthorizedHandler
+    ) {
+      unauthorizedHandler();
+    }
+
     throw new ApiError(problem);
   }
 
@@ -103,109 +123,183 @@ async function request<T>(
 
 export const apiClient = {
   getHealth(): Promise<HealthResponse> {
-    return request<HealthResponse>('/health');
+    return request<HealthResponse>('/health', { skipUnauthorizedHandler: true });
   },
 
-  getMe(token: string): Promise<Profile> {
-    return request<Profile>('/v1/me', { token });
+  getMe(options?: { skipUnauthorizedHandler?: boolean }): Promise<Profile> {
+    return request<Profile>('/v1/me', {
+      skipUnauthorizedHandler: options?.skipUnauthorizedHandler,
+    });
   },
 
-  updateMe(token: string, body: ProfileUpdate): Promise<Profile> {
-    return request<Profile>('/v1/me', { method: 'PATCH', token, body });
+  updateMe(body: ProfileUpdate): Promise<Profile> {
+    return request<Profile>('/v1/me', { method: 'PATCH', body });
   },
 
-  redeemInvite(token: string, body: RedeemInviteRequest): Promise<Profile> {
-    return request<Profile>('/v1/auth/redeem-invite', { method: 'POST', token, body });
+  registerOptions(body: RegistrationOptionsRequest): Promise<CeremonyOptions> {
+    return request<CeremonyOptions>('/v1/auth/registration/options', {
+      method: 'POST',
+      body,
+      skipUnauthorizedHandler: true,
+    });
   },
 
-  listTopics(token: string): Promise<ListTopicsResponse> {
-    return request<ListTopicsResponse>('/v1/topics', { token });
+  registerVerify(body: RegistrationVerifyRequest): Promise<Profile> {
+    return request<Profile>('/v1/auth/registration/verify', {
+      method: 'POST',
+      body,
+      skipUnauthorizedHandler: true,
+    });
   },
 
-  createTopic(token: string, body: TopicCreate): Promise<Topic> {
-    return request<Topic>('/v1/topics', { method: 'POST', token, body });
+  loginOptions(): Promise<CeremonyOptions> {
+    return request<CeremonyOptions>('/v1/auth/login/options', {
+      method: 'POST',
+      body: {},
+      skipUnauthorizedHandler: true,
+    });
   },
 
-  updateTopic(token: string, topicId: string, body: TopicUpdate): Promise<Topic> {
+  loginVerify(body: CeremonyVerifyRequest): Promise<Profile> {
+    return request<Profile>('/v1/auth/login/verify', {
+      method: 'POST',
+      body,
+      skipUnauthorizedHandler: true,
+    });
+  },
+
+  logout(): Promise<void> {
+    return request<void>('/v1/auth/logout', {
+      method: 'POST',
+      skipUnauthorizedHandler: true,
+    });
+  },
+
+  reauthOptions(): Promise<CeremonyOptions> {
+    return request<CeremonyOptions>('/v1/auth/reauth/options', {
+      method: 'POST',
+    });
+  },
+
+  reauthVerify(body: CeremonyVerifyRequest): Promise<void> {
+    return request<void>('/v1/auth/reauth/verify', {
+      method: 'POST',
+      body,
+    });
+  },
+
+  listPasskeys(): Promise<ListPasskeysResponse> {
+    return request<ListPasskeysResponse>('/v1/me/passkeys');
+  },
+
+  addPasskeyOptions(): Promise<CeremonyOptions> {
+    return request<CeremonyOptions>('/v1/me/passkeys/options', {
+      method: 'POST',
+    });
+  },
+
+  addPasskeyVerify(body: RegistrationVerifyRequest): Promise<Passkey> {
+    return request<Passkey>('/v1/me/passkeys/verify', {
+      method: 'POST',
+      body,
+    });
+  },
+
+  deletePasskey(passkeyId: string): Promise<void> {
+    return request<void>(`/v1/me/passkeys/${encodeURIComponent(passkeyId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  listSessions(): Promise<ListSessionsResponse> {
+    return request<ListSessionsResponse>('/v1/me/sessions');
+  },
+
+  deleteSession(sessionId: string): Promise<void> {
+    return request<void>(`/v1/me/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  listTopics(): Promise<ListTopicsResponse> {
+    return request<ListTopicsResponse>('/v1/topics');
+  },
+
+  createTopic(body: TopicCreate): Promise<Topic> {
+    return request<Topic>('/v1/topics', { method: 'POST', body });
+  },
+
+  updateTopic(topicId: string, body: TopicUpdate): Promise<Topic> {
     return request<Topic>(`/v1/topics/${encodeURIComponent(topicId)}`, {
       method: 'PATCH',
-      token,
       body,
     });
   },
 
-  deleteTopic(token: string, topicId: string): Promise<void> {
+  deleteTopic(topicId: string): Promise<void> {
     return request<void>(`/v1/topics/${encodeURIComponent(topicId)}`, {
       method: 'DELETE',
-      token,
     });
   },
 
-  listSubscriptions(token: string): Promise<ListSubscriptionsResponse> {
-    return request<ListSubscriptionsResponse>('/v1/subscriptions', { token });
+  listSubscriptions(): Promise<ListSubscriptionsResponse> {
+    return request<ListSubscriptionsResponse>('/v1/subscriptions');
   },
 
-  createSubscription(token: string, body: SubscriptionCreate): Promise<Subscription> {
-    return request<Subscription>('/v1/subscriptions', { method: 'POST', token, body });
+  createSubscription(body: SubscriptionCreate): Promise<Subscription> {
+    return request<Subscription>('/v1/subscriptions', { method: 'POST', body });
   },
 
-  updateSubscription(
-    token: string,
-    subscriptionId: string,
-    body: SubscriptionUpdate,
-  ): Promise<Subscription> {
+  updateSubscription(subscriptionId: string, body: SubscriptionUpdate): Promise<Subscription> {
     return request<Subscription>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       method: 'PATCH',
-      token,
       body,
     });
   },
 
-  deleteSubscription(token: string, subscriptionId: string): Promise<void> {
+  deleteSubscription(subscriptionId: string): Promise<void> {
     return request<void>(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       method: 'DELETE',
-      token,
     });
   },
 
-  getDeliverySlots(token: string): Promise<DeliverySlotSet> {
-    return request<DeliverySlotSet>('/v1/delivery-slots', { token });
+  getDeliverySlots(): Promise<DeliverySlotSet> {
+    return request<DeliverySlotSet>('/v1/delivery-slots');
   },
 
-  replaceDeliverySlots(token: string, body: DeliverySlotsReplace): Promise<DeliverySlotSet> {
-    return request<DeliverySlotSet>('/v1/delivery-slots', { method: 'PUT', token, body });
+  replaceDeliverySlots(body: DeliverySlotsReplace): Promise<DeliverySlotSet> {
+    return request<DeliverySlotSet>('/v1/delivery-slots', { method: 'PUT', body });
   },
 
-  listReports(token: string, date?: string): Promise<ListReportsResponse> {
+  listReports(date?: string): Promise<ListReportsResponse> {
     const query = date ? `?date=${encodeURIComponent(date)}` : '';
-    return request<ListReportsResponse>(`/v1/reports${query}`, { token });
+    return request<ListReportsResponse>(`/v1/reports${query}`);
   },
 
-  getReport(token: string, reportId: string): Promise<Report> {
-    return request<Report>(`/v1/reports/${encodeURIComponent(reportId)}`, { token });
+  getReport(reportId: string): Promise<Report> {
+    return request<Report>(`/v1/reports/${encodeURIComponent(reportId)}`);
   },
 
-  setItemMark(token: string, itemId: string, body: ItemMarkUpdate): Promise<ItemMark> {
+  setItemMark(itemId: string, body: ItemMarkUpdate): Promise<ItemMark> {
     return request<ItemMark>(`/v1/items/${encodeURIComponent(itemId)}/mark`, {
       method: 'PUT',
-      token,
       body,
     });
   },
 
-  getAgentSettings(token: string): Promise<AgentSettings> {
-    return request<AgentSettings>('/v1/agent-settings', { token });
+  getAgentSettings(): Promise<AgentSettings> {
+    return request<AgentSettings>('/v1/agent-settings');
   },
 
-  updateAgentSettings(token: string, body: AgentSettingsUpdate): Promise<AgentSettings> {
-    return request<AgentSettings>('/v1/agent-settings', { method: 'PATCH', token, body });
+  updateAgentSettings(body: AgentSettingsUpdate): Promise<AgentSettings> {
+    return request<AgentSettings>('/v1/agent-settings', { method: 'PATCH', body });
   },
 
-  generateNow(token: string): Promise<UserJob> {
-    return request<UserJob>('/v1/jobs', { method: 'POST', token });
+  generateNow(): Promise<UserJob> {
+    return request<UserJob>('/v1/jobs', { method: 'POST' });
   },
 
-  getJob(token: string, jobId: string): Promise<UserJob> {
-    return request<UserJob>(`/v1/jobs/${encodeURIComponent(jobId)}`, { token });
+  getJob(jobId: string): Promise<UserJob> {
+    return request<UserJob>(`/v1/jobs/${encodeURIComponent(jobId)}`);
   },
 };
