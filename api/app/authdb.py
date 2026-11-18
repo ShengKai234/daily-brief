@@ -102,6 +102,10 @@ async def create_ceremony(
     display_name=None,
 ):
     if session_id is not None:
+        # Serialize on profile then session (design 5.6 order) so concurrent options cannot both
+        # retire the same oldest ceremony and leave more than five open.
+        await lock_profile(db, user_id)
+        await db.execute("SELECT 1 FROM auth_sessions WHERE id = %s FOR UPDATE", (session_id,))
         # At most 5 unconsumed ceremonies per session: retire the oldest beyond the cap.
         await db.execute(
             "UPDATE webauthn_ceremonies SET consumed_at = %s WHERE id IN ("
