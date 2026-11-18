@@ -82,6 +82,25 @@ Python 3.12+, `uv` only (no pip/poetry). Install dependencies separately in each
 - Never use `pull_request_target` in workflows.
 - Never let the `claude_subscription` runner process a job for anyone but the configured owner (DESIGN 3.1).
 
+## Test-driven development (Kai, 2026-11-18)
+
+- Every change starts with a test that fails on the current code. Commit it first (`test: ... (red)`), then the code that makes it pass (`feat:` or `fix:`), then refactor with the suite green. The PR history must show red before green.
+- Each agent runs its own directory's full suite and lint before every push (commands table above); never push with a failing or skipped test you introduced.
+- Bug and review fixes (`REVIEWS.md` rows) also start with a failing test that reproduces the finding. Concurrency findings need real PostgreSQL concurrency tests, not mocks.
+- Tests use the BDD scenario names from the design documents where they exist.
+
+## Proof for Kai (human-style run with screenshots)
+
+- A feature or fix is "done" only with a proof run: a Playwright journey that drives the **real local stack** like a person (real clicks and typing, short pauses, phone-width viewport; virtual authenticator for passkeys), with a full-page screenshot after every step.
+- Journeys live in `web/e2e/proof/` (owned by web; other agents request journeys there through `HANDOFFS.md`). Output goes to `$BRIEF_MEMORY_DIR/proof/<pr-or-feature>-<yyyymmdd-hhmm>/`: numbered PNGs, `steps.json` (step, expectation, pass or check) and the Playwright trace. Never commit proof output to the repo.
+- Lead runs the journeys after merge-ready reviews, checks every screenshot, and sends Kai the proof with any failures found. A proof that shows a problem becomes a `REVIEWS.md` row or a `HANDOFFS.md` entry.
+
+## Housekeeping
+
+- Keep only what someone still needs. Delete temporary scripts, scratch files, `.bak` copies and stale proof runs when their work is merged (keep the latest proof per feature and any proof that documents an open bug).
+- Do not leave untracked files in a worktree when you stop; either commit them in the right directory or delete them.
+- Never delete another agent's files, branches or worktrees; ask lead.
+
 ## Review findings (`REVIEWS.md`)
 
 Every finding from an agent review (Codex, Claude) or from Kai is tracked in `$BRIEF_MEMORY_DIR/REVIEWS.md` (protocol at the top of that file).
