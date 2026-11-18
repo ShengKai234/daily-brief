@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, apiClient } from '../api/client';
 import { formatProblemMessage } from '../api/errors';
@@ -33,9 +33,45 @@ export function SecurityPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingReauth, setPendingReauth] = useState<PendingReauthAction | null>(null);
+  const verifyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const reauthTriggerRef = useRef<HTMLElement | null>(null);
+  const pendingFocusRestoreRef = useRef(false);
 
-  const loadSecurityData = useCallback(async () => {
-    setLoading(true);
+  const restoreTriggerFocus = useCallback((immediate: boolean = false) => {
+    const trigger = reauthTriggerRef.current;
+    if (!trigger || !trigger.isConnected) {
+      reauthTriggerRef.current = null;
+      return;
+    }
+    if (immediate) {
+      reauthTriggerRef.current = null;
+      trigger.focus();
+    } else {
+      pendingFocusRestoreRef.current = true;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!busy && pendingFocusRestoreRef.current) {
+      pendingFocusRestoreRef.current = false;
+      const trigger = reauthTriggerRef.current;
+      reauthTriggerRef.current = null;
+      if (trigger && trigger.isConnected) {
+        trigger.focus();
+      }
+    }
+  }, [busy]);
+
+  useEffect(() => {
+    if (pendingReauth) {
+      verifyButtonRef.current?.focus();
+    }
+  }, [pendingReauth]);
+
+  const loadSecurityData = useCallback(async (isRefresh: boolean = false) => {
+    if (!isRefresh) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [pkRes, sessRes] = await Promise.all([
@@ -51,7 +87,9 @@ export function SecurityPage() {
         setError(err instanceof Error ? err.message : 'Failed to load security settings.');
       }
     } finally {
-      setLoading(false);
+      if (!isRefresh) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -74,8 +112,9 @@ export function SecurityPage() {
       });
       setNewLabel('');
       setPendingReauth(null);
-      await loadSecurityData();
+      await loadSecurityData(true);
       setNotice('Passkey added.');
+      restoreTriggerFocus();
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.problem.code === 'reauth_required') {
@@ -104,8 +143,9 @@ export function SecurityPage() {
         navigate('/', { replace: true });
         return;
       }
-      await loadSecurityData();
+      await loadSecurityData(true);
       setNotice('Passkey removed.');
+      restoreTriggerFocus();
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.problem.code === 'reauth_required') {
@@ -122,6 +162,9 @@ export function SecurityPage() {
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!reauthTriggerRef.current && document.activeElement instanceof HTMLElement) {
+      reauthTriggerRef.current = document.activeElement;
+    }
     await executeAddPasskey(newLabel);
   };
 
@@ -168,7 +211,7 @@ export function SecurityPage() {
         navigate('/', { replace: true });
         return;
       }
-      await loadSecurityData();
+      await loadSecurityData(true);
       setNotice('Session revoked.');
     } catch (err) {
       if (err instanceof ApiError) {
@@ -224,6 +267,7 @@ export function SecurityPage() {
           </p>
           <div className="row">
             <button
+              ref={verifyButtonRef}
               type="button"
               className="btn btn-primary"
               onClick={() => void handleCompleteReauth()}
@@ -238,6 +282,7 @@ export function SecurityPage() {
               onClick={() => {
                 setPendingReauth(null);
                 setError(null);
+                restoreTriggerFocus(true);
               }}
               disabled={busy}
             >
@@ -279,7 +324,12 @@ export function SecurityPage() {
                   <button
                     type="button"
                     className="btn"
-                    onClick={() => void executeDeletePasskey(pk)}
+                    onClick={() => {
+                      if (!reauthTriggerRef.current && document.activeElement instanceof HTMLElement) {
+                        reauthTriggerRef.current = document.activeElement;
+                      }
+                      void executeDeletePasskey(pk);
+                    }}
                     disabled={busy}
                     aria-label={`Remove passkey ${pk.label || pk.id}`}
                   >
