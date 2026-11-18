@@ -1,6 +1,7 @@
 """Codex review of PR #8 (REVIEWS.md 8-2 .. 8-7): real PostgreSQL concurrency and adapter tests."""
 
 import asyncio
+import base64
 from datetime import timedelta
 
 import pytest
@@ -246,7 +247,48 @@ async def test_unexpected_failures_are_contained_before_the_adapter_logs(env, mo
     headers = {k.lower(): v for k, v in result["headers"].items()}
     assert headers["content-type"].startswith("application/problem+json")
     assert headers["cache-control"] == "no-store"
-    assert json.loads(result["body"])["code"] == "internal_error"
-    assert secret not in result["body"]
+    body = result["body"]
+    if result.get("isBase64Encoded"):
+        body = base64.b64decode(body).decode()
+    assert json.loads(body)["code"] == "internal_error"
+    assert secret not in body
     assert secret not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+@pytest.mark.integration
+async def test_malformed_transports_fail_registration_in_a_controlled_way(env):
+    """8-6: a non-list `transports` is a registration failure that consumes the ceremony."""
+    token = await Cli(env).token("bootstrap-owner")
+    browser = env["browser"]()
+    options = (await browser.post("/v1/auth/registration/options", json=options_body(token))).json()
+    credential = FakeAuthenticator().create(options["public_key"])
+    credential["response"]["transports"] = 42
+    response = await browser.post(
+        "/v1/auth/registration/verify",
+        json={"ceremony_id": options["ceremony_id"], "credential": credential},
+        contract=False,
+    )
+    assert (response.status_code, response.json()["code"]) == (400, "registration_failed")
+    consumed = await rows(env, "SELECT consumed_at FROM webauthn_ceremonies")
+    assert all(row["consumed_at"] for row in consumed)
+    assert await rows(env, "SELECT 1 FROM passkey_credentials") == []
+
+
+@pytest.mark.integration
+async def test_the_five_ceremony_cap_holds_under_concurrent_options(env):
+    """8-7: simultaneous reauth and add-passkey options must never leave more than five open."""
+    browser, auth = await owner_with_passkey(env)
+    assert (await reauth(browser, auth, OWNER)).status_code == 204
+    calls = []
+    for index in range(16):
+        path = "/v1/auth/reauth/options" if index % 2 else "/v1/me/passkeys/options"
+        calls.append(browser.post(path, contract=False))
+    responses = await asyncio.gather(*calls)
+    assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
+    open_ceremonies = await rows(
+        env,
+        "SELECT 1 FROM webauthn_ceremonies WHERE session_id IS NOT NULL "
+        "AND consumed_at IS NULL AND expires_at > now()",
+    )
+    assert len(open_ceremonies) <= 5
