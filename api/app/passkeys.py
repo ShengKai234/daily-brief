@@ -314,6 +314,8 @@ async def commit_registration(database, settings, ceremony_id, registered, label
             await lock_sessions(db, first["user_id"])
             credentials = await lock_credentials(db, first["user_id"])
         ceremony = await lock_ceremony(db, ceremony_id)
+        # AUTH-4: validity is judged after the whole lock chain, with fresh time.
+        now = clock.now()
         if not ceremony_usable(ceremony, now):
             raise Problem(400, "ceremony_invalid")
         await registration_checks(settings, token, profile, credentials or [], now, purpose)
@@ -488,6 +490,8 @@ async def commit_login(database, settings, ceremony_id, stored, assertion, now):
         await lock_sessions(db, user_id)
         credentials = await lock_credentials(db, user_id)
         ceremony = await lock_ceremony(db, ceremony_id)
+        # AUTH-4: validity is judged after the whole lock chain, with fresh time.
+        now = clock.now()
         if not ceremony_usable(ceremony, now):
             raise Problem(400, "ceremony_invalid")
         current = next((c for c in credentials if c["id"] == stored["id"]), None)
@@ -595,6 +599,8 @@ async def commit_reauth(database, ceremony_id, me, stored, assertion, now):
         sessions = await lock_sessions(db, me.user_id)
         credentials = await lock_credentials(db, me.user_id)
         ceremony = await lock_ceremony(db, ceremony_id)
+        # AUTH-4: validity is judged after the whole lock chain, with fresh time.
+        now = clock.now()
         if not ceremony_usable(ceremony, now):
             raise Problem(400, "ceremony_invalid")
         session = next(
@@ -801,6 +807,8 @@ async def commit_add_passkey(database, ceremony_id, me, registered, label, now):
         sessions = await lock_sessions(db, me.user_id)
         credentials = await lock_credentials(db, me.user_id)
         ceremony = await lock_ceremony(db, ceremony_id)
+        # AUTH-4: validity is judged after the whole lock chain, with fresh time.
+        now = clock.now()
         if not ceremony_usable(ceremony, now):
             raise Problem(400, "ceremony_invalid")
         session = next(
@@ -845,8 +853,13 @@ async def delete_passkey(passkey_id: UUID, request: Request, me: Authenticated):
         await lock_profile(db, me.user_id)
         sessions = await lock_sessions(db, me.user_id)
         credentials = await lock_credentials(db, me.user_id)
+        now = clock.now()
         session = next((s for s in sessions if s["id"] == me.session_id), None)
-        if session is None or session["idle_expires_at"] <= now:
+        if (
+            session is None
+            or session["idle_expires_at"] <= now
+            or session["absolute_expires_at"] <= now
+        ):
             raise Problem(401, "unauthorized")
         if not await reauth_ok(session, now):
             raise Problem(403, "reauth_required")
