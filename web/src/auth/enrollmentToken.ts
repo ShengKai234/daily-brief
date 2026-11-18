@@ -1,3 +1,9 @@
+declare global {
+  interface Window {
+    __DAILY_BRIEF_ENROLL_TOKEN__?: string;
+  }
+}
+
 let inMemoryEnrollmentToken: string | null = null;
 
 function parseTokenFromHash(hash: string): string | null {
@@ -21,6 +27,13 @@ function parseTokenFromHash(hash: string): string | null {
 export function extractEnrollmentTokenFromLocation(): string | null {
   if (typeof window === 'undefined') {
     return inMemoryEnrollmentToken;
+  }
+  if (typeof window.__DAILY_BRIEF_ENROLL_TOKEN__ === 'string') {
+    const bootstrapped = window.__DAILY_BRIEF_ENROLL_TOKEN__.trim();
+    delete window.__DAILY_BRIEF_ENROLL_TOKEN__;
+    if (bootstrapped.length > 0) {
+      inMemoryEnrollmentToken = bootstrapped;
+    }
   }
   const parsed = parseTokenFromHash(window.location.hash);
   if (parsed) {
