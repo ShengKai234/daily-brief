@@ -292,3 +292,35 @@ async def test_the_five_ceremony_cap_holds_under_concurrent_options(env):
         "AND consumed_at IS NULL AND expires_at > now()",
     )
     assert len(open_ceremonies) <= 5
+
+
+@pytest.mark.integration
+async def test_session_revocation_does_not_deadlock_with_options(env):
+    """8-8: every session write locks the profile first (design 5.6), including revocation."""
+    from authkit import sign_in
+
+    mac, auth = await owner_with_passkey(env)
+    phone = env["browser"]()
+    assert (await sign_in(phone, auth, OWNER)).status_code == 200
+    target = next(
+        s for s in (await mac.get("/v1/me/sessions")).json()["sessions"] if not s["is_current"]
+    )
+    async with env["super"].transaction() as holder:
+        # Plays options: it owns the profile and then wants the session row.
+        await holder.execute("SELECT 1 FROM profiles WHERE user_id = %s FOR UPDATE", (OWNER,))
+        revoking = asyncio.create_task(
+            mac.delete(f"/v1/me/sessions/{target['id']}", contract=False)
+        )
+        await asyncio.sleep(0.7)
+        locking = asyncio.create_task(
+            holder.execute("SELECT 1 FROM auth_sessions WHERE id = %s FOR UPDATE", (target["id"],))
+        )
+        await asyncio.sleep(2)
+    response, locked = await asyncio.gather(revoking, locking, return_exceptions=True)
+    assert not isinstance(locked, Exception), repr(locked)
+    assert not isinstance(response, Exception), repr(response)
+    assert response.status_code == 204, response.text
+    reason = await rows(
+        env, "SELECT revoke_reason FROM auth_sessions WHERE id = %s", (target["id"],)
+    )
+    assert reason[0]["revoke_reason"] == "user_revoked"
