@@ -685,6 +685,35 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it('focuses reauth controls when shown, restores focus on cancel/completion, and preserves controls during refresh (REVIEWS 9-4)', async () => {
+    const user = userEvent.setup();
+    installFakeBrowserPasskey(MOCK_DEFAULT_PASSKEY_CRED_ID);
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
+    renderApp(['/security']);
+
+    const addBtn = await screen.findByRole('button', { name: /Add passkey on this device/i });
+    await user.click(addBtn);
+
+    const verifyBtn = await screen.findByRole('button', { name: /^Verify passkey$/i });
+    expect(document.activeElement).toBe(verifyBtn);
+
+    // Cancel restores focus to the triggering control
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(document.activeElement).toBe(addBtn);
+
+    // Trigger reauth again and complete it -> controls stay mounted during refresh and focus returns
+    await user.click(addBtn);
+    await screen.findByRole('button', { name: /^Verify passkey$/i });
+    installFakeBrowserPasskey('new-second-cred-9-4');
+    await user.click(screen.getByRole('button', { name: /^Verify passkey$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Passkeys \(2\/10\)/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Loading security settings/i)).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(addBtn);
+  });
 });
 
 describe('End-to-end user flows against the mock API', () => {
