@@ -454,6 +454,41 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(ERROR_MESSAGES.account_disabled);
     });
   });
+
+  it('keeps user signed in with retryable error on non-401 logout failure and signs out on 401/success (REVIEWS 9-2)', async () => {
+    const user = userEvent.setup();
+    signInMockUserForTests(MOCK_OWNER_USER_ID);
+    renderApp(['/']);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sign Out' })).toBeInTheDocument();
+    });
+
+    const logoutSpy = vi
+      .spyOn(apiClient, 'logout')
+      .mockRejectedValueOnce(new Error('Network connection lost'));
+
+    try {
+      await user.click(screen.getByRole('button', { name: 'Sign Out' }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(/Network connection lost/i);
+      });
+      // Still signed in so the user knows the server session is not revoked and can retry
+      expect(screen.getByRole('button', { name: 'Sign Out' })).toBeInTheDocument();
+      expect(
+        screen.queryByRole('heading', { name: /Sign In to Daily Brief/i }),
+      ).not.toBeInTheDocument();
+
+      // Retry succeeds -> signed out
+      await user.click(screen.getByRole('button', { name: 'Sign Out' }));
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /Sign In to Daily Brief/i })).toBeInTheDocument();
+      });
+    } finally {
+      logoutSpy.mockRestore();
+    }
+  });
 });
 
 describe('End-to-end user flows against the mock API', () => {
