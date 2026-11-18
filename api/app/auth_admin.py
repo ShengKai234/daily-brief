@@ -186,6 +186,10 @@ async def cmd_revoke_token(settings, database, args):
     now = clock.now()
     token_id = UUID(args.token_id)
     async with database.transaction() as db:
+        # Same order as recovery (design 5.6): profile first, then the token.
+        target = await db.one("SELECT user_id FROM enrollment_tokens WHERE id = %s", (token_id,))
+        if target is not None and target["user_id"] is not None:
+            await lock_profile(db, target["user_id"])
         row = await db.one(
             "UPDATE enrollment_tokens SET revoked_at = %s WHERE id = %s "
             "AND used_at IS NULL AND revoked_at IS NULL RETURNING id, user_id",
