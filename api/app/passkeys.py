@@ -649,6 +649,9 @@ async def revoke_one_session(request, me, session_id, reason):
     database = request.app.state.database
     now = clock.now()
     async with database.transaction() as db:
+        # Profile first (design 5.6), like every other path that touches sessions: the audit
+        # insert below needs the profile key-share lock and must not wait while holding a session.
+        await lock_profile(db, me.user_id)
         row = await db.one(
             "UPDATE auth_sessions SET revoked_at = %s, revoke_reason = %s "
             "WHERE id = %s AND user_id = %s AND revoked_at IS NULL RETURNING id",
