@@ -9,21 +9,23 @@ Change only the directory you own. Everything else: ask its owner in `HANDOFFS.m
 
 | Agent | Tool | Branch / worktree | Owns |
 |---|---|---|---|
-| lead + contracts (A) | Claude Code | `main` (main checkout) | root files, `docs/` (except `agent-memory/`), `contracts/`, `docker-compose.yml`, `Makefile` |
+| lead + contracts (A) | Claude Code | `main` (main checkout) | root files, `docs/` (except `agent-memory/`), `contracts/`, `docker-compose.yml`, `Makefile`, `.github/workflows/ci.yml`, tool permission files |
 | db (B) | Codex | `agent/db` → `../daily-brief-db` | `db/` |
 | api (C) | Codex | `agent/api` → `../daily-brief-api` | `api/` |
 | worker (D) | Claude Code | `agent/worker` → `../daily-brief-worker` | `worker/`, `.github/workflows/agent-worker.yml` |
 | web (E) | agy | `agent/web` → `../daily-brief-web` | `web/` |
 | infra (F) | Codex | `agent/infra` → `../daily-brief-infra` | `infra/`, `.github/workflows/deploy-*.yml` (starts after M1 only) |
-| review (G) | Claude Code + Codex | read-only | nothing; writes review reports to its memory log |
+| auth (H) | Claude Code (Sonnet) | `agent/auth` → `../daily-brief-auth` | passkey auth cutover in `db/` and `api/` (`docs/auth-passkey-design.md`); takes over those directories from db/api for this work |
+| auth-web (I) | agy | `agent/auth-web` → `../daily-brief-auth-web` | passkey auth UI in `web/` (enroll, sign-in, security pages) |
+| review (G) | Codex (Claude for agy/Codex-written code) | read-only | nothing; writes review reports to its memory log. The auth cutover (H, I) is reviewed by Codex |
 
-Each agent maintains its own service's entry in `docker-compose.yml` by proposing the change in `HANDOFFS.md` to lead.
+In `docker-compose.yml` / `docker-compose.override.yml` each agent may edit only its own service block (db agent: `migrate`; api agent: `api`, `scheduler`; web agent: `web`), including removing its `todo-*` profile once the service builds. Anything else there (the `db` service, volumes, `Makefile`) goes to lead via `HANDOFFS.md`.
 
 ## Memory protocol (full rules: DESIGN 10.1)
 
 Shared files live on the `memory` branch, checked out at `../daily-brief-memory`. Use `$BRIEF_MEMORY_DIR` (= `<that worktree>/docs/agent-memory`), never your own worktree's copy.
 
-1. Start of session: read `BOARD.md`, `DECISIONS.md`, `HANDOFFS.md` entries addressed to you, and the logs of agents you depend on. Resolve open handoffs to you before new work.
+1. Start of session: read `BOARD.md`, `DECISIONS.md`, `HANDOFFS.md` entries addressed to you, `REVIEWS.md` rows owned by you, and the logs of agents you depend on. Resolve open handoffs and open review rows to you before new work.
 2. Update your own `BOARD.md` row when you start and stop. Blocked → status `blocked` + a `HANDOFFS.md` entry.
 3. Your log is `<agent>.md`: newest entry on top, dated. Shared files are append-only; never rewrite another agent's text.
 4. Write facts: commands run and their results. Mark anything unverified as unverified.
@@ -43,6 +45,9 @@ Each worktree has its own git-ignored `.env` (copy `.env.example`) with its own 
 | worker | `brief-worker` | 300 | 5732 | 8300 | 5473 |
 | web | `brief-web` | 400 | 5832 | 8400 | 5573 |
 | infra | `brief-infra` | 500 | 5932 | 8500 | 5673 |
+| demo (lead, local only) | `brief-demo` | 600 | 6032 | 8600 | 5773 |
+| auth | `brief-auth` | 700 | 6132 | 8700 | 5873 |
+| auth-web | `brief-auth-web` | 800 | 6232 | 8800 | 5973 |
 
 Repo-wide: `make up`, `make down`, `make migrate`, `make seed`, `make test`, `make lint`, `make logs`.
 
@@ -57,6 +62,15 @@ Repo-wide: `make up`, `make down`, `make migrate`, `make seed`, `make test`, `ma
 
 Python 3.12+, `uv` only (no pip/poetry). Install dependencies separately in each worktree. Tests that need a database use the compose `db` service or a throwaway container, never a cloud database.
 
+## Hard rules (apply even if your tool runs without a sandbox or approvals)
+
+- Never push to `main`, never force-push, never rewrite published history.
+- Only push to your own `agent/<name>` branch; merging into `main` is done by Kai via PR.
+- Never run `rm -rf` or delete files outside this repo and `../daily-brief-memory`.
+- Never modify `~/.ssh`, `~/.aws`, `~/.codex`, `~/.claude`, `~/.gemini`, or any credentials or `.env` secrets.
+- Never run `terraform apply`, `aws ... delete`, or anything else that changes cloud resources.
+- When blocked, stop and write to `$BRIEF_MEMORY_DIR/HANDOFFS.md` instead of guessing.
+
 ## Never
 
 - Never write secrets, tokens, real email addresses or other personal data into any file, test, fixture, log or memory file. Use placeholders such as `owner@example.com`. Real values come from the git-ignored `.env`.
@@ -68,6 +82,34 @@ Python 3.12+, `uv` only (no pip/poetry). Install dependencies separately in each
 - Never use `pull_request_target` in workflows.
 - Never let the `claude_subscription` runner process a job for anyone but the configured owner (DESIGN 3.1).
 
+## Test-driven development (Kai, 2026-11-18)
+
+- Every change starts with a test that fails on the current code. Commit it first (`test: ... (red)`), then the code that makes it pass (`feat:` or `fix:`), then refactor with the suite green. The PR history must show red before green.
+- Each agent runs its own directory's full suite and lint before every push (commands table above); never push with a failing or skipped test you introduced.
+- Bug and review fixes (`REVIEWS.md` rows) also start with a failing test that reproduces the finding. Concurrency findings need real PostgreSQL concurrency tests, not mocks.
+- Tests use the BDD scenario names from the design documents where they exist.
+
+## Proof for Kai (human-style run with screenshots)
+
+- A feature or fix is "done" only with a proof run: a Playwright journey that drives the **real local stack** like a person (real clicks and typing, short pauses, phone-width viewport; virtual authenticator for passkeys), with a full-page screenshot after every step.
+- Journeys live in `web/e2e/proof/` (owned by web; other agents request journeys there through `HANDOFFS.md`). Output goes to `$BRIEF_MEMORY_DIR/proof/<pr-or-feature>-<yyyymmdd-hhmm>/`: numbered PNGs, `steps.json` (step, expectation, pass or check) and the Playwright trace. Never commit proof output to the repo.
+- Lead runs the journeys after merge-ready reviews, checks every screenshot, and sends Kai the proof with any failures found. A proof that shows a problem becomes a `REVIEWS.md` row or a `HANDOFFS.md` entry.
+
+## Housekeeping
+
+- Keep only what someone still needs. Delete temporary scripts, scratch files, `.bak` copies and stale proof runs when their work is merged (keep the latest proof per feature and any proof that documents an open bug).
+- Do not leave untracked files in a worktree when you stop; either commit them in the right directory or delete them.
+- Never delete another agent's files, branches or worktrees; ask lead.
+
+## Review findings (`REVIEWS.md`)
+
+Every finding from an agent review (Codex, Claude) or from Kai is tracked in `$BRIEF_MEMORY_DIR/REVIEWS.md` (protocol at the top of that file).
+
+- **Reviewers** record each finding as a row (`<PR>-<n>`, severity, `file:line`, owner) right after the review. Kai's findings (PR comments or messages to lead) are recorded by lead.
+- **Owners** fix every open row, highest severity first: commit, push, set `fixed` with the commit SHA. If you disagree, set `disputed` with a reason and write to `HANDOFFS.md` (`to: lead`, or `to: Kai` for his findings). Never skip a row silently.
+- **The reviewer** re-checks and sets `verified`, or reopens the row.
+- A PR is ready to merge only with no unverified Critical/Major rows and no undecided `disputed` rows.
+
 ## When you stop
 
-Update your `BOARD.md` row and your log, then report: what you did, how you verified it (commands + results), and what is not done or not verified. Commit to your own `agent/<name>` branch, push only that branch (`git push -u origin agent/<name>`), and open a pull request into `main` with `gh pr create`. Never merge; Kai merges after a cross-vendor review (DESIGN 10.2). Set your BOARD status to `done` with the PR link.
+Update your `BOARD.md` row, your log and your `REVIEWS.md` rows, then report: what you did, how you verified it (commands + results), and what is not done or not verified. Commit to your own `agent/<name>` branch, push only that branch (`git push -u origin agent/<name>`), and open a pull request into `main` with `gh pr create`. Never merge; Kai merges after a cross-vendor review (DESIGN 10.2). Set your BOARD status to `done` with the PR link.
