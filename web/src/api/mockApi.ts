@@ -91,6 +91,7 @@ interface StoredCeremony {
   enrollmentToken: string | null;
   displayName: string | null;
   sessionId: string | null;
+  challenge: string;
   consumed: boolean;
 }
 
@@ -569,6 +570,45 @@ function toSessionDto(s: StoredSession, activeSessionId: string | null): Session
   };
 }
 
+function decodeBase64urlJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || value.length === 0) {
+    return null;
+  }
+  try {
+    const padded = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padLength = (4 - (padded.length % 4)) % 4;
+    const decoded = atob(padded + '='.repeat(padLength));
+    const parsed = JSON.parse(decoded) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateMockProof(
+  kind: 'create' | 'get',
+  response: Record<string, unknown>,
+  expectedChallenge: string,
+): boolean {
+  const clientData = decodeBase64urlJson(response.clientDataJSON);
+  if (!clientData) {
+    return false;
+  }
+  const expectedType = kind === 'create' ? 'webauthn.create' : 'webauthn.get';
+  if (clientData.type !== expectedType || clientData.challenge !== expectedChallenge) {
+    return false;
+  }
+  if (kind === 'create') {
+    return typeof response.attestationObject === 'string' && response.attestationObject.length > 0;
+  }
+  return (
+    typeof response.authenticatorData === 'string' &&
+    response.authenticatorData.length > 0 &&
+    typeof response.signature === 'string' &&
+    response.signature.length > 0
+  );
+}
+
 function isReauthenticated(session: StoredSession): boolean {
   return session.reauthAtMs !== null && Date.now() - session.reauthAtMs <= mockAuthConfig.reauthTtlMs;
 }
@@ -722,6 +762,7 @@ export async function mockFetch(
         ? body.display_name?.trim() || 'Daily Brief User'
         : db.users[targetUserId].profile.display_name;
 
+    const challenge = makeChallengeBase64url();
     db.ceremonies[ceremonyId] = {
       id: ceremonyId,
       purpose,
@@ -730,6 +771,7 @@ export async function mockFetch(
       enrollmentToken: tokenEntry.token,
       displayName: tokenEntry.purpose === 'invite' ? displayName : null,
       sessionId: null,
+      challenge,
       consumed: false,
     };
 
@@ -749,7 +791,7 @@ export async function mockFetch(
           name: `${displayName} · ${getRpId()}`,
           displayName,
         },
-        challenge: makeChallengeBase64url(),
+        challenge,
         pubKeyCredParams: [
           { type: 'public-key', alg: -7 },
           { type: 'public-key', alg: -257 },
@@ -781,7 +823,9 @@ export async function mockFetch(
       return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
     }
     ceremony.consumed = true;
-
+    if (!validateMockProof('create', body.credential.response, ceremony.challenge)) {
+      return problemResponse(400, 'registration_failed', 'Registration Failed', 'Invalid passkey proof.');
+    }
     const tokenEntry = ceremony.enrollmentToken ? db.tokens[ceremony.enrollmentToken] : null;
     if (!tokenEntry || tokenEntry.status === 'revoked') {
       return problemResponse(400, 'enrollment_token_invalid', 'Invalid Token', 'Token invalid.');
@@ -847,6 +891,7 @@ export async function mockFetch(
 
   if (pathname === '/api/v1/auth/login/options' && method === 'POST') {
     const ceremonyId = nextUuid('92000000');
+    const challenge = makeChallengeBase64url();
     db.ceremonies[ceremonyId] = {
       id: ceremonyId,
       purpose: 'login',
@@ -855,12 +900,13 @@ export async function mockFetch(
       enrollmentToken: null,
       displayName: null,
       sessionId: null,
+      challenge,
       consumed: false,
     };
     const options: CeremonyOptions = {
       ceremony_id: ceremonyId,
       public_key: {
-        challenge: makeChallengeBase64url(),
+        challenge,
         timeout: 300000,
         rpId: getRpId(),
         allowCredentials: [],
@@ -880,7 +926,9 @@ export async function mockFetch(
       return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
     }
     ceremony.consumed = true;
-
+    if (!validateMockProof('get', body.credential.response, ceremony.challenge)) {
+      return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
+    }
     const pk = db.passkeys.find((p) => p.credentialId === body.credential.id && !p.revokedAt);
     if (!pk) {
       return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
@@ -940,6 +988,7 @@ export async function mockFetch(
 
   if (pathname === '/api/v1/auth/reauth/options' && method === 'POST') {
     const ceremonyId = nextUuid('93000000');
+    const challenge = makeChallengeBase64url();
     db.ceremonies[ceremonyId] = {
       id: ceremonyId,
       purpose: 'reauth',
@@ -948,6 +997,7 @@ export async function mockFetch(
       enrollmentToken: null,
       displayName: null,
       sessionId: activeSession.id,
+      challenge,
       consumed: false,
     };
     const allowCredentials = db.passkeys
@@ -956,7 +1006,7 @@ export async function mockFetch(
     const options: CeremonyOptions = {
       ceremony_id: ceremonyId,
       public_key: {
-        challenge: makeChallengeBase64url(),
+        challenge,
         timeout: 300000,
         rpId: getRpId(),
         allowCredentials,
@@ -981,6 +1031,9 @@ export async function mockFetch(
       return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
     }
     ceremony.consumed = true;
+    if (!validateMockProof('get', body.credential.response, ceremony.challenge)) {
+      return problemResponse(401, 'authentication_failed', 'Authentication Failed', 'Authentication failed.');
+    }
     const pk = db.passkeys.find(
       (p) =>
         p.credentialId === body.credential.id &&
@@ -1013,6 +1066,7 @@ export async function mockFetch(
       return problemResponse(409, 'passkey_limit', 'Passkey Limit', 'Maximum 10 passkeys.');
     }
     const ceremonyId = nextUuid('94000000');
+    const challenge = makeChallengeBase64url();
     db.ceremonies[ceremonyId] = {
       id: ceremonyId,
       purpose: 'add_passkey',
@@ -1021,6 +1075,7 @@ export async function mockFetch(
       enrollmentToken: null,
       displayName: null,
       sessionId: activeSession.id,
+      challenge,
       consumed: false,
     };
     const excludeCredentials = db.passkeys
@@ -1035,7 +1090,7 @@ export async function mockFetch(
           name: `${store.profile.display_name} · ${getRpId()}`,
           displayName: store.profile.display_name,
         },
-        challenge: makeChallengeBase64url(),
+        challenge,
         pubKeyCredParams: [
           { type: 'public-key', alg: -7 },
           { type: 'public-key', alg: -257 },
@@ -1071,6 +1126,9 @@ export async function mockFetch(
       return problemResponse(400, 'ceremony_invalid', 'Invalid Ceremony', 'Ceremony is invalid.');
     }
     ceremony.consumed = true;
+    if (!validateMockProof('create', body.credential.response, ceremony.challenge)) {
+      return problemResponse(400, 'registration_failed', 'Registration Failed', 'Invalid passkey proof.');
+    }
 
     if (db.passkeys.some((p) => p.credentialId === body.credential.id)) {
       return problemResponse(409, 'credential_exists', 'Credential Exists', 'Passkey already exists.');

@@ -39,6 +39,27 @@ function renderApp(initialEntries: string[] = ['/']) {
   );
 }
 
+function encodeBase64urlBytes(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function encodeClientDataJson(type: 'webauthn.create' | 'webauthn.get', challengeBuf: BufferSource): string {
+  const bytes =
+    challengeBuf instanceof ArrayBuffer
+      ? new Uint8Array(challengeBuf)
+      : new Uint8Array(challengeBuf.buffer, challengeBuf.byteOffset, challengeBuf.byteLength);
+  const json = JSON.stringify({
+    type,
+    challenge: encodeBase64urlBytes(bytes),
+    origin: 'http://localhost',
+  });
+  return encodeBase64urlBytes(new TextEncoder().encode(json));
+}
+
 function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_CRED_ID) {
   class FakePublicKeyCredential {
     public readonly id: string;
@@ -46,10 +67,17 @@ function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_C
     public readonly type = 'public-key' as const;
     public readonly authenticatorAttachment = 'platform';
     public readonly response: Record<string, unknown>;
+    private readonly clientDataB64: string;
+    private readonly kind: 'create' | 'get';
 
-    constructor(id: string) {
+    constructor(id: string, kind: 'create' | 'get', challenge: BufferSource) {
       this.id = id;
+      this.kind = kind;
       this.rawId = new Uint8Array([1, 2, 3, 4]).buffer;
+      this.clientDataB64 = encodeClientDataJson(
+        kind === 'create' ? 'webauthn.create' : 'webauthn.get',
+        challenge,
+      );
       this.response = {
         clientDataJSON: new Uint8Array([5, 6]).buffer,
         attestationObject: new Uint8Array([7, 8]).buffer,
@@ -69,10 +97,18 @@ function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_C
         id: this.id,
         rawId: this.id,
         type: 'public-key',
-        response: {
-          clientDataJSON: 'BQY',
-          attestationObject: 'Bwg',
-        },
+        response:
+          this.kind === 'create'
+            ? {
+                clientDataJSON: this.clientDataB64,
+                attestationObject: 'Bwg',
+              }
+            : {
+                clientDataJSON: this.clientDataB64,
+                authenticatorData: 'CQo',
+                signature: 'Cww',
+                userHandle: 'DQ4',
+              },
         authenticatorAttachment: 'platform',
         clientExtensionResults: {},
       };
@@ -87,8 +123,12 @@ function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_C
   Object.defineProperty(navigator, 'credentials', {
     configurable: true,
     value: {
-      create: vi.fn(async () => new FakePublicKeyCredential(credentialId)),
-      get: vi.fn(async () => new FakePublicKeyCredential(credentialId)),
+      create: vi.fn(async (opts: CredentialCreationOptions) =>
+        new FakePublicKeyCredential(credentialId, 'create', opts.publicKey!.challenge),
+      ),
+      get: vi.fn(async (opts: CredentialRequestOptions) =>
+        new FakePublicKeyCredential(credentialId, 'get', opts.publicKey!.challenge),
+      ),
     },
   });
 }
@@ -621,6 +661,29 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
     ).rejects.toMatchObject({
       problem: { status: 401, code: 'authentication_failed' },
     });
+
+    // 4. apiClient sends credentials: 'same-origin' and no Authorization header when mock is disabled
+    vi.stubEnv('VITE_USE_MOCK_API', 'false');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'ok' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    try {
+      await apiClient.getHealth();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/health',
+        expect.objectContaining({ credentials: 'same-origin' }),
+      );
+      const sentHeaders = fetchSpy.mock.calls[0][1]?.headers as Record<string, string>;
+      expect(sentHeaders.Authorization).toBeUndefined();
+    } finally {
+      fetchSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });
 
