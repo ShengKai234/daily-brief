@@ -158,3 +158,41 @@ async def test_revoke_token_and_recovery_do_not_deadlock(env):
     assert response.status_code == 200, response.text
     # The token was already revoked by the recovery, so the CLI reports that cleanly.
     assert isinstance(cli, auth_admin.CliError) or isinstance(cli, str), repr(cli)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@db.example.com/x",
+        "postgresql://u:p@db.example.com/x?sslmode=require",
+        "postgresql://u:p@db.example.com/x?sslmode=disable",
+        "postgresql://u:p@db.example.com/x?sslmode=verify-full&sslrootcert=/etc/ca.pem",
+    ],
+)
+async def test_production_connections_verify_the_server_identity(monkeypatch, url):
+    """8-4: DB identity is verified (verify-full); a weaker URL setting cannot lower it."""
+    from conftest import production_settings
+
+    from app import database as database_module
+
+    captured = {}
+
+    class Stop(Exception):
+        pass
+
+    async def fake_connect(conninfo, **kwargs):
+        captured["conninfo"], captured["kwargs"] = conninfo, kwargs
+        raise Stop
+
+    monkeypatch.setattr(database_module.AsyncConnection, "connect", fake_connect)
+    settings = production_settings(url, database_sslmode="")
+    with pytest.raises(Stop):
+        async with database_module.Database(settings, url).transaction():
+            pass
+    import psycopg.conninfo
+
+    merged = psycopg.conninfo.conninfo_to_dict(captured["conninfo"], **captured["kwargs"])
+    assert merged["sslmode"] == "verify-full"
+    if "sslrootcert" in url:
+        assert merged["sslrootcert"] == "/etc/ca.pem"
