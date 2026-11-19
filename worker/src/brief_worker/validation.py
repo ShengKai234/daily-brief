@@ -89,6 +89,25 @@ def _host(url: str) -> str:
     return host.removeprefix("www.")
 
 
+def _trim_hosts(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep at most MAX_ITEMS_PER_HOST items per host in each section (the best-ranked ones),
+    then renumber ranks 1..n. Returns a copy; the runner's output is not mutated. The rest of
+    the validation runs on the trimmed copy, so anything else wrong still fails the result."""
+    trimmed = copy.deepcopy(result)
+    for section in trimmed["sections"]:
+        seen: Counter[str] = Counter()
+        kept = []
+        for item in section["items"]:  # array order is rank order
+            host = _host(item["source_url"])
+            if seen[host] < MAX_ITEMS_PER_HOST:
+                seen[host] += 1
+                kept.append(item)
+        for rank, item in enumerate(kept, start=1):
+            item["rank"] = rank
+        section["items"] = kept
+    return trimmed
+
+
 def _is_uuid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -112,6 +131,9 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
     ]
     if errors:
         raise OutputInvalidError("schema: " + "; ".join(errors[:10]))
+
+    # Schema-valid, so ranks equal positions and every item has a URL with a host.
+    result = _trim_hosts(result)
 
     problems: list[str] = []
     try:
@@ -138,11 +160,6 @@ def validate_result(result: Any, request: dict[str, Any]) -> dict[str, Any]:
         if section["title"] != wanted_title:
             problems.append(f"topic {tid}: section title must equal the request's topic title")
         items = section["items"]
-        per_host = Counter(_host(i["source_url"]) for i in items)
-        if per_host and max(per_host.values()) > MAX_ITEMS_PER_HOST:
-            problems.append(
-                f"topic {tid}: more than {MAX_ITEMS_PER_HOST} items from one source host"
-            )
         if len(items) > wanted[tid]:
             problems.append(f"topic {tid}: {len(items)} items, limit {wanted[tid]}")
         for position, item in enumerate(items, start=1):
