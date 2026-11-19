@@ -12,7 +12,14 @@ import os
 import tempfile
 import time
 
-from ..errors import OutputInvalidError, OwnerOnlyError
+from ..errors import (
+    ClaudeExitError,
+    ClaudeNotLoggedInError,
+    ClaudeUsageLimitError,
+    OutputInvalidError,
+    OwnerOnlyError,
+    WorkerError,
+)
 from ..prompt import SYSTEM_PROMPT, build_user_prompt
 from ..validation import cli_schema
 from .base import BriefRequest, BriefResult
@@ -83,18 +90,24 @@ class ClaudeSubscriptionRunner:
                 env=self.build_env(),
             )
             try:
-                out, _ = await asyncio.wait_for(
+                out, err = await asyncio.wait_for(
                     proc.communicate(build_user_prompt(request).encode()), self.timeout_s
                 )
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 raise OutputInvalidError("claude run timed out") from None
-        if proc.returncode != 0:
-            raise OutputInvalidError(f"claude exited with code {proc.returncode}")
-        return self.parse_output(
-            out.decode(errors="replace"), int((time.monotonic() - started) * 1000)
-        )
+        stdout = out.decode(errors="replace")
+        stderr = (err or b"").decode(errors="replace")
+        if proc.returncode == 0:
+            try:
+                return self.parse_output(stdout, int((time.monotonic() - started) * 1000))
+            except OutputInvalidError:
+                known = classify_cli_failure(stdout, stderr)
+                if known:
+                    raise known from None
+                raise
+        raise classify_cli_failure(stdout, stderr) or ClaudeExitError()
 
     def parse_output(self, raw: str, duration_ms: int) -> BriefResult:
         """Parse `claude -p --output-format stream-json --verbose` (JSON lines), or a single
@@ -199,3 +212,49 @@ def _tokens(top: object, per_model: list[dict], key: str) -> int | None:
     by_model = sum(_int(m.get(key)) for m in per_model)
     value = max(_int(top), by_model)
     return value if (top is not None or per_model) else None
+
+
+# Matched case-insensitively against the CLI's own failure text. Only the resulting short code
+# leaves this module: raw CLI output is never logged or sent anywhere.
+_NOT_LOGGED_IN = (
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "token has expired",
+    "authentication_failed",
+    "authentication failed",
+    "oauth_org_not_allowed",
+)
+_USAGE_LIMIT = ("usage limit", "limit reached", "rate limit", "rate_limit")
+
+
+def _failure_texts(stdout: str, stderr: str) -> list[str]:
+    texts = [stderr]
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            texts.append(line)
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "result" and isinstance(obj.get("result"), str):
+            if obj.get("is_error"):
+                texts.append(obj["result"])
+        error = obj.get("error")
+        if isinstance(error, str):  # system/api_retry events carry an error category
+            texts.append(error)
+    return [t.lower() for t in texts if t]
+
+
+def classify_cli_failure(stdout: str, stderr: str) -> WorkerError | None:
+    """Map CLI failure output to a known short-code error, or None if unrecognised."""
+    texts = _failure_texts(stdout, stderr)
+    if any(p in t for t in texts for p in _NOT_LOGGED_IN):
+        return ClaudeNotLoggedInError()
+    if any(p in t for t in texts for p in _USAGE_LIMIT):
+        return ClaudeUsageLimitError()
+    return None

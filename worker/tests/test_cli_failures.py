@@ -47,7 +47,12 @@ def fake_cli(monkeypatch, stdout="", stderr="", returncode=1):
         (result_line("Not logged in · Please run /login"), ""),
         ("", "Error: Invalid API key"),
         ("", "OAuth token has expired. Please run /login"),
-        (json.dumps({"type": "system", "subtype": "api_retry", "error": "authentication_failed"}), ""),
+        (
+            json.dumps(
+                {"type": "system", "subtype": "api_retry", "error": "authentication_failed"}
+            ),
+            "",
+        ),
     ],
 )
 @pytest.mark.parametrize("returncode", [0, 1])
@@ -102,8 +107,14 @@ async def test_unknown_error_text_never_reaches_the_error(request_dict, monkeypa
 
 
 def job_client(request_dict, calls, claims=1):
-    job = {"id": "44444444-4444-4444-8444-444444444444", "user_id": OWNER, "slot_id": None,
-           "scheduled_for": "2026-11-12T07:00:00Z", "attempts": 1, "runner": "claude_subscription"}
+    job = {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "user_id": OWNER,
+        "slot_id": None,
+        "scheduled_for": "2026-11-12T07:00:00Z",
+        "attempts": 1,
+        "runner": "claude_subscription",
+    }
     request_dict["user_id"] = OWNER
     left = [claims]
 

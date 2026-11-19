@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import time
+from enum import IntEnum
 
 import httpx
 
@@ -66,6 +67,12 @@ def check_identity(job: dict, request: dict, effective_runner: str, owner_user_i
         raise OwnerOnlyError("claude_subscription runner is restricted to the owner")
 
 
+class Outcome(IntEnum):
+    EMPTY = 0  # queue empty
+    DONE = 1  # one job handled (succeeded or failed)
+    HALT = 2  # a failure that every later job would share (sign-in, usage limit): stop claiming
+
+
 async def process_one(
     client: JobClient,
     worker_id: str,
@@ -74,11 +81,11 @@ async def process_one(
     owner_user_id: str | None,
     attempt_timeout_s: float = DEFAULT_ATTEMPT_TIMEOUT_S,
     time_left_s: float | None = None,
-) -> bool:
-    """Claim and process one job. Returns False when the queue is empty."""
+) -> Outcome:
+    """Claim and process one job. EMPTY when there was nothing to claim."""
     claimed = await client.claim(worker_id)
     if claimed is None:
-        return False
+        return Outcome.EMPTY
     job, request = claimed["job"], claimed["request"]
     job_id, attempt = job["id"], job["attempts"]
 
@@ -106,10 +113,12 @@ async def process_one(
     except WorkerError as exc:
         log.error("job %s failed: %s", job_id, exc)
         await report_failure(str(exc), exc.retryable)
+        if exc.halts_run:
+            return Outcome.HALT
     except Exception as exc:  # unexpected: report the type only, never raw content
         log.exception("job %s crashed", job_id)
         await report_failure(f"worker error: {type(exc).__name__}", True)
-    return True
+    return Outcome.DONE
 
 
 async def run(max_jobs: int = 10) -> int:
@@ -126,16 +135,20 @@ async def run(max_jobs: int = 10) -> int:
             if left < worst_case_job_s(attempt_s):  # not enough time for a worst-case job
                 log.info("stopping: %.0fs left is below the worst-case job time", left)
                 break
-            if not await process_one(
+            outcome = await process_one(
                 client,
                 worker_id,
                 override=os.environ.get("AGENT_RUNNER") or None,
                 owner_user_id=os.environ.get("OWNER_USER_ID") or None,
                 attempt_timeout_s=attempt_s,
                 time_left_s=left,
-            ):
+            )
+            if not outcome:
                 break
             done += 1
+            if outcome == Outcome.HALT:
+                log.error("stopping: this failure would repeat for every remaining job")
+                break
     finally:
         await client.aclose()
     log.info("processed %d job(s)", done)

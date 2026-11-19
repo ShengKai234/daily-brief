@@ -2,6 +2,7 @@ class WorkerError(Exception):
     """Base class. `retryable` tells the API whether the job may be re-queued."""
 
     retryable = True
+    halts_run = False  # True: later jobs in this run would fail the same way, so stop claiming
 
 
 class OutputInvalidError(WorkerError):
@@ -41,3 +42,30 @@ class LeaseLostError(WorkerError):
     nothing more is posted for this job."""
 
     retryable = False
+
+
+class ClaudeNotLoggedInError(WorkerError):
+    """The Claude CLI has no valid sign-in. A retry cannot succeed; later jobs would fail too."""
+
+    retryable = False
+    halts_run = True
+
+    def __init__(self) -> None:
+        super().__init__("claude_not_logged_in")
+
+
+class ClaudeUsageLimitError(WorkerError):
+    """The Claude plan's usage limit is reached. Retrying now cannot succeed."""
+
+    retryable = False
+    halts_run = True
+
+    def __init__(self) -> None:
+        super().__init__("claude_usage_limit")
+
+
+class ClaudeExitError(OutputInvalidError):
+    """The CLI failed for an unclassified reason. Retried once like invalid output."""
+
+    def __init__(self) -> None:
+        super().__init__("claude_exit_nonzero")
