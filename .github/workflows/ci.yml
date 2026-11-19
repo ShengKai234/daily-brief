@@ -1,0 +1,26 @@
+# Repo-wide checks (DESIGN 8: CI runs a secret scan). Owned by lead.
+# Never use pull_request_target here: fork PRs must not receive secrets.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks (full history)
+        run: >
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" ghcr.io/gitleaks/gitleaks:v8.18.4
+          detect --source /repo --redact --verbose --exit-code 1
