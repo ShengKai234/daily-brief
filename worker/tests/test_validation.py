@@ -118,12 +118,35 @@ def _items(res, n=0):
     return res["sections"][n]["items"]
 
 
-async def test_three_items_from_one_host_are_blocked(request_dict):
+async def test_three_items_from_one_host_keep_best_two_and_renumber(request_dict):
     res = await valid(request_dict)
     for i, item in enumerate(_items(res), start=1):
         item["source_url"] = f"https://aiweekly.co/issues/{i}"
-    with pytest.raises(OutputInvalidError, match="one source host"):
-        validate_result(res, request_dict)
+    kept = validate_result(res, request_dict)
+    items = _items(kept)
+    assert [i["source_url"] for i in items] == [
+        "https://aiweekly.co/issues/1",
+        "https://aiweekly.co/issues/2",
+    ]
+    assert [i["rank"] for i in items] == [1, 2]
+    assert kept["sections"][0]["status"] == "ok"
+
+
+async def test_excess_item_from_a_host_is_dropped_wherever_it_sits(request_dict):
+    res = await valid(request_dict)
+    urls = ["https://a.com/1", "https://b.com/1", "https://a.com/2"]
+    extra = dict(_items(res)[0], source_url="https://a.com/3", rank=4)
+    _items(res).append(extra)
+    for item, url in zip(_items(res), [*urls, "https://a.com/3"], strict=True):
+        item["source_url"] = url
+    request_dict["topics"][0]["item_count"] = 4
+    kept = validate_result(res, request_dict)
+    assert [i["source_url"] for i in _items(kept)] == [
+        "https://a.com/1",
+        "https://b.com/1",
+        "https://a.com/2",
+    ]
+    assert [i["rank"] for i in _items(kept)] == [1, 2, 3]
 
 
 async def test_host_match_ignores_case_and_www(request_dict):
@@ -131,8 +154,34 @@ async def test_host_match_ignores_case_and_www(request_dict):
     urls = ["https://www.Site.com/a", "https://site.com/b", "https://SITE.COM/c"]
     for item, url in zip(_items(res), urls, strict=True):
         item["source_url"] = url
-    with pytest.raises(OutputInvalidError, match="one source host"):
+    kept = validate_result(res, request_dict)
+    assert len(_items(kept)) == 2
+
+
+async def test_trimming_does_not_mutate_the_runner_output(request_dict):
+    res = await valid(request_dict)
+    for i, item in enumerate(_items(res), start=1):
+        item["source_url"] = f"https://aiweekly.co/{i}"
+    validate_result(res, request_dict)
+    assert len(_items(res)) == 3
+
+
+async def test_trimming_never_rescues_an_otherwise_invalid_result(request_dict):
+    res = await valid(request_dict)
+    for i, item in enumerate(_items(res), start=1):
+        item["source_url"] = f"https://aiweekly.co/{i}"
+    _items(res)[2]["published_at"] = None  # would be dropped, but another item is bad too
+    _items(res)[0]["published_at"] = None
+    with pytest.raises(OutputInvalidError, match="published_at is required"):
         validate_result(res, request_dict)
+
+
+async def test_trimmed_result_is_still_validated_against_the_schema(request_dict):
+    res = await valid(request_dict)
+    for i, item in enumerate(_items(res), start=1):
+        item["source_url"] = f"https://aiweekly.co/{i}"
+    kept = validate_result(res, request_dict)
+    validate_result(kept, request_dict)  # idempotent, nothing left to trim
 
 
 async def test_two_items_from_one_host_are_allowed(request_dict):
