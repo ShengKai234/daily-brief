@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Mock WebAuthn credential id in the web mock API (base64url of a fixed mock string), not a secret"
+regexes = ['''^bW9jay1vd25lci1wYXNza2V5LWNyZWQtMQ$''']
