@@ -60,7 +60,10 @@ function encodeClientDataJson(type: 'webauthn.create' | 'webauthn.get', challeng
   return encodeBase64urlBytes(new TextEncoder().encode(json));
 }
 
-function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_CRED_ID) {
+function installFakeBrowserPasskey(
+  credentialId: string = MOCK_DEFAULT_PASSKEY_CRED_ID,
+  getCredentialId: string = credentialId,
+) {
   class FakePublicKeyCredential {
     public readonly id: string;
     public readonly rawId: ArrayBuffer;
@@ -127,7 +130,7 @@ function installFakeBrowserPasskey(credentialId: string = MOCK_DEFAULT_PASSKEY_C
         new FakePublicKeyCredential(credentialId, 'create', opts.publicKey!.challenge),
       ),
       get: vi.fn(async (opts: CredentialRequestOptions) =>
-        new FakePublicKeyCredential(credentialId, 'get', opts.publicKey!.challenge),
+        new FakePublicKeyCredential(getCredentialId, 'get', opts.publicKey!.challenge),
       ),
     },
   });
@@ -705,7 +708,7 @@ describe('Passkey auth, enrollment, security, and 401 handling', () => {
     // Trigger reauth again and complete it -> controls stay mounted during refresh and focus returns
     await user.click(addBtn);
     await screen.findByRole('button', { name: /^Verify passkey$/i });
-    installFakeBrowserPasskey('new-second-cred-9-4');
+    installFakeBrowserPasskey('new-second-cred-9-4', MOCK_DEFAULT_PASSKEY_CRED_ID);
     await user.click(screen.getByRole('button', { name: /^Verify passkey$/i }));
 
     await waitFor(() => {

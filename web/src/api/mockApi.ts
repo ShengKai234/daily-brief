@@ -32,7 +32,7 @@ export const MOCK_INVITE_TOKEN = 'invite-token-valid-000000000000000000000000000
 export const MOCK_OWNER_RECOVERY_TOKEN = 'recovery-owner-0000000000000000000000000000000002';
 export const MOCK_EXPIRED_TOKEN = 'expired-token-00000000000000000000000000000000003';
 export const MOCK_USED_TOKEN = 'used-token-00000000000000000000000000000000000004';
-export const MOCK_DEFAULT_PASSKEY_CRED_ID = 'mock-owner-passkey-cred-1';
+export const MOCK_DEFAULT_PASSKEY_CRED_ID = 'bW9jay1vd25lci1wYXNza2V5LWNyZWQtMQ';
 
 export const DEFAULT_REPORT_DATE = getTodayInTimezone('Asia/Taipei');
 
